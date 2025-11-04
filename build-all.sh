@@ -14,8 +14,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# In the same directory as your Dockerfile:
-# Build for current platform only
-docker build \
+# Multi-platform build for both ARM64 and x64 architectures
+# Requires docker buildx with multi-platform support
+# Uses QEMU v8.1.5 to avoid segfaults in ARM64 emulation (https://github.com/tonistiigi/binfmt/issues/245)
+
+# Set up QEMU with older version to avoid segmentation faults
+docker run --privileged --rm tonistiigi/binfmt:qemu-v8.1.5 --install all
+
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
   -t mikesplay/dns-proxy:latest \
-  .
+  -t mikesplay/dns-proxy:arm64 \
+  -t mikesplay/dns-proxy:amd64 \
+  --push .

@@ -71,8 +71,11 @@ sudo docker run  \
 # Build and test locally
 ./test.sh
 
-# Build and push to Docker Hub
+# Build for current platform
 ./build.sh
+
+# Build for multiple platforms (ARM64 + x64)
+./build-all.sh
 ```
 
 ## Project Structure
@@ -84,7 +87,8 @@ dns-proxy/
 ├── sync.py            # Pi-hole synchronization logic
 ├── run.sh             # Application entry point
 ├── test.sh            # Testing script
-├── build.sh           # Build and deployment script
+├── build.sh           # Build script (current platform)
+├── build-all.sh       # Multi-platform build script
 └── tests/             # Test suite
     └── test_sync.py
 ```
