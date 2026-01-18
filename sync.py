@@ -108,11 +108,50 @@ class PiHoleClient:
             self.session.close()
 
 
+def load_overrides(file_path: str) -> Dict[str, str]:
+    """Load DNS overrides from hosts-format file: 'IP hostname [alias...]'"""
+    if not file_path or not os.path.exists(file_path):
+        return {}
+    result = {}
+    with open(file_path, "r") as f:
+        for line in f:
+            line = line.split("#")[0].strip()
+            if not line:
+                continue
+            parts = line.split()
+            if len(parts) >= 2:
+                ip = parts[0]
+                for hostname in parts[1:]:
+                    result[hostname] = ip
+    return result
+
+
+def apply_overrides(
+    dns_map: Dict[str, str],
+    overrides: Dict[str, str],
+    debug: bool = False,
+) -> Dict[str, str]:
+    """Apply static overrides, taking precedence over Avahi-discovered hosts."""
+    updated = dict(dns_map)
+    for host, ip in overrides.items():
+        existing_ip = updated.get(host)
+        if existing_ip is None:
+            print(f"[INFO] Override: {host} -> {ip}")
+        elif existing_ip != ip:
+            print(f"[INFO] Override: {host} {existing_ip} -> {ip}")
+        else:
+            _debug_log(debug, f"Override unchanged for {host}; remains {ip}")
+            continue
+        updated[host] = ip
+    return updated
+
+
 def sync_iteration(
     pihole_client: "PiHoleClient",
     avahi_client: "AvahiClient",
     domain_suffix: str,
     keep_local: bool,
+    overrides: Dict[str, str] = None,
     debug: bool = False,
 ) -> Dict[str, str]:
     dns_map = pihole_client.fetch_hosts()
@@ -124,7 +163,12 @@ def sync_iteration(
         }
         _debug_log(debug, f"Avahi hosts discovered: {avahi_debug}")
 
-    updated = apply_avahi_records(dns_map, records, debug=debug)
+    updated = apply_avahi_records(dns_map, records, overrides=overrides, debug=debug)
+
+    # Apply overrides (for hosts not discovered via Avahi)
+    if overrides:
+        updated = apply_overrides(updated, overrides, debug=debug)
+
     _debug_log(
         debug,
         f"Updating Pi-hole with {len(updated)} hosts: {sorted(updated.items())}",
@@ -137,27 +181,30 @@ def sync_iteration(
 def apply_avahi_records(
     dns_map: Dict[str, str],
     records: Iterable[HostRecord],
+    overrides: Dict[str, str] = None,
     debug: bool = False,
 ) -> Dict[str, str]:
     updated = dict(dns_map)
+    overrides = overrides or {}
     for record in records:
         host = record.fqdn
         preferred_ip = record.preferred_ip
-        existing_ip = updated.get(host)
         if not preferred_ip:
             print(
                 f"[WARN] No preferred IP resolved for {record.base_name}.local; skipping",
                 file=sys.stderr,
             )
             continue
-        if existing_ip is None:
-            print(f"[INFO] Discovered: {host} -> {preferred_ip}")
-        elif existing_ip != preferred_ip:
-            print(
-                f"[WARN] Updating information for {host}: Avahi candidates {list(record.candidates)} -> chosen {preferred_ip}",
-                file=sys.stderr,
-            )
-        else:
+        existing_ip = updated.get(host)
+        has_override = host in overrides
+        # Always log Avahi discoveries (useful for finding hosts after OS reinstall)
+        if existing_ip is None or existing_ip != preferred_ip:
+            suffix = " (override active)" if has_override else ""
+            print(f"[INFO] Avahi: {host} -> {preferred_ip}{suffix}")
+        # Skip Pi-hole update if host has static override
+        if has_override:
+            continue
+        if existing_ip == preferred_ip:
             _debug_log(debug, f"No change for {host}; remains {existing_ip}")
             continue
         updated[host] = preferred_ip
@@ -170,12 +217,17 @@ def main() -> None:
     domain_suffix = os.getenv("DOMAIN_SUFFIX", "home")
     debug_enabled = os.getenv("DEBUG", "0") == "1"
     keep_local = os.getenv("KEEP_LOCAL", "0") == "1"
+    overrides_file = os.getenv("DNS_OVERRIDES_FILE", "/config/overrides")
 
     if not pihole_token:
         print("[ERROR] Missing API token (PIHOLE_TOKEN)", file=sys.stderr)
         sys.exit(1)
 
     _debug_log(debug_enabled, "Debug logging enabled")
+
+    overrides = load_overrides(overrides_file)
+    if overrides:
+        print(f"[INFO] Loaded {len(overrides)} DNS overrides: {list(overrides.keys())}")
 
     avahi_client = AvahiClient(debug=debug_enabled)
     pihole_client = None
@@ -186,6 +238,7 @@ def main() -> None:
             avahi_client,
             domain_suffix,
             keep_local=keep_local,
+            overrides=overrides,
             debug=debug_enabled,
         )
     except RuntimeError as exc:

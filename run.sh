@@ -20,6 +20,8 @@
 # DOMAIN_SUFFIX: default is 'local'
 # INTERVAL: sleep time in seconds between syncs (default: 300)
 # AVAHI_DISABLE_AUTOSTART: set to 1 to disable auto-start of avahi-daemon and dbus-daemon
+# DNS_OVERRIDES_FILE: path to hosts-format overrides file (default: /config/overrides)
+#                     format: "IP hostname" per line, like /etc/hosts
 
 
 # On Host Machine, run this:
