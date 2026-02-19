@@ -16,7 +16,7 @@
 
 import os
 import sys
-from typing import Dict, Iterable
+from typing import Dict, Iterable, List, Union
 
 import requests
 
@@ -78,12 +78,18 @@ class PiHoleClient:
                 print(f"[DEBUG] Pi-hole host: {host} -> {ip}", file=sys.stderr)
         return dns_map
 
-    def update_hosts(self, dns_map: Dict[str, str]) -> None:
-        hosts_list = [f"{ip} {host}" for host, ip in dns_map.items()]
+    def update_hosts(self, dns_map: Dict[str, Union[str, List[str]]]) -> None:
+        hosts_list = []
+        for host, ip_or_ips in dns_map.items():
+            if isinstance(ip_or_ips, list):
+                for ip in ip_or_ips:
+                    hosts_list.append(f"{ip} {host}")
+            else:
+                hosts_list.append(f"{ip_or_ips} {host}")
         payload = {"config": {"dns": {"hosts": sorted(hosts_list)}}}
         if self.debug:
             print(
-                f"[DEBUG] Updating Pi-hole hosts payload: {sorted(dns_map.items())}",
+                f"[DEBUG] Updating Pi-hole with {len(hosts_list)} host entries",
                 file=sys.stderr,
             )
         set_resp = self.session.patch(
@@ -208,6 +214,44 @@ def apply_avahi_records(
             _debug_log(debug, f"No change for {host}; remains {existing_ip}")
             continue
         updated[host] = preferred_ip
+
+    # Create subdomain variants: .any (all IPs), .v4 (IPv4 only), .v6 (IPv6 only)
+    seen_bases = set()
+    for record in records:
+        if record.base_name in seen_bases:
+            continue
+        seen_bases.add(record.base_name)
+        if not record.all_ips:
+            continue
+
+        # Split IPs by address family
+        v4_ips = [ip for ip in record.all_ips if ":" not in ip]
+        v6_ips = [ip for ip in record.all_ips if ":" in ip]
+
+        # Build subdomain hostnames: base_name.{any,v4,v6}.domain
+        parts = record.fqdn.rsplit(".", 1)
+        if len(parts) == 2:
+            base, domain = parts
+        else:
+            base, domain = record.fqdn, ""
+
+        variants = [
+            ("any", list(record.all_ips)),
+            ("v4", v4_ips),
+            ("v6", v6_ips),
+        ]
+
+        for variant, ips in variants:
+            if not ips:
+                continue
+            variant_host = f"{base}.{variant}.{domain}" if domain else f"{base}.{variant}"
+            if variant_host in overrides:
+                continue
+            existing = updated.get(variant_host)
+            if existing != ips:
+                _debug_log(debug, f"{variant}: {variant_host} -> {ips}")
+                updated[variant_host] = ips if len(ips) > 1 else ips[0]
+
     return updated
 
 

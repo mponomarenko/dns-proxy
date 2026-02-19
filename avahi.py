@@ -24,6 +24,7 @@ class HostRecord:
     fqdn: str
     preferred_ip: str
     candidates: Sequence[str]
+    all_ips: Sequence[str] = ()  # All IPs including IPv6
 
 
 class AvahiClient:
@@ -39,7 +40,8 @@ class AvahiClient:
 
     def discover_hosts(self, domain_suffix: str, keep_local: bool = False) -> List[HostRecord]:
         raw = self._run_browse()
-        candidates = self._collect_candidates(raw)
+        candidates = self._collect_candidates(raw, ipv4_only=True)
+        all_candidates = self._collect_candidates(raw, ipv4_only=False)
         if not candidates:
             print("[ERROR] No IPv4 mDNS records discovered via avahi-browse", file=sys.stderr)
         else:
@@ -48,6 +50,7 @@ class AvahiClient:
         records = []
         for base_name, ips in candidates.items():
             ordered_ips = list(ips)
+            all_ips = all_candidates.get(base_name, ordered_ips)
             preferred = self._resolve_preferred(base_name, ordered_ips)
             fqdn = f"{base_name}.{domain_suffix}" if domain_suffix else base_name
             suffixes = [fqdn]
@@ -64,6 +67,7 @@ class AvahiClient:
                         fqdn=fqdn_variant,
                         preferred_ip=preferred,
                         candidates=tuple(ordered_ips),
+                        all_ips=tuple(all_ips),
                     )
                 )
         return records
@@ -80,11 +84,15 @@ class AvahiClient:
             return ""
 
     @staticmethod
-    def _collect_candidates(raw: str) -> Dict[str, List[str]]:
+    def _collect_candidates(raw: str, ipv4_only: bool = True) -> Dict[str, List[str]]:
         seen = set()
         candidates: Dict[str, List[str]] = {}
         for line in raw.splitlines():
-            if "IPv4" not in line:
+            is_ipv4 = "IPv4" in line
+            is_ipv6 = "IPv6" in line
+            if ipv4_only and not is_ipv4:
+                continue
+            if not is_ipv4 and not is_ipv6:
                 continue
             cols = line.split(";")
             try:
@@ -93,6 +101,9 @@ class AvahiClient:
             except IndexError:
                 continue
             if not raw_host or not ip_field:
+                continue
+            # Skip link-local IPv6 addresses (fe80::)
+            if is_ipv6 and ip_field.startswith("fe80:"):
                 continue
             base_name = raw_host[:-6] if raw_host.endswith(".local") else raw_host
             key = (base_name, ip_field)
