@@ -38,13 +38,10 @@ It can convert foo.local into foo.home, or leave as foo.local if you are feeling
 - **Dockerized Solution** - Easy deployment and management
 - **mDNS Discovery** - Automatically discovers `.local` devices on your network
 - **Pi-hole Integration** - Syncs discovered devices to your Pi-hole DNS server
+- **Multiple Pi-hole Targets** - Fan-out updates to multiple Pi-hole instances (master/slave setups)
+- **IPv6 Support** - Discovers both IPv4 and IPv6 addresses with `.v4`, `.v6`, and `.any` subdomain variants
 - **Lightweight** - Minimal resource footprint
 - **Real-time Sync** - Continuously monitors and updates DNS records
-
-## Missing Features
-
-- **IPv6** - is NOT supported.
-- **Multiple targets** - if you are running master/slave pi-hole you should be ok. For now point this to master only, or just run many copies.
 
 ## Quick Start
 
@@ -52,6 +49,20 @@ Before you begin - make sure to create .env file, most importantly:
 ```bash
 PIHOLE_API=http://10.0.0.2/api
 PIHOLE_TOKEN=yadayadayada
+```
+
+### Multiple Pi-hole Instances
+
+For master/slave or redundant Pi-hole setups, you can sync to multiple instances:
+
+```bash
+# Multiple targets with different tokens
+PIHOLE_API=http://10.0.0.2/api,http://10.0.0.3/api
+PIHOLE_TOKEN=token_for_pihole1,token_for_pihole2
+
+# Multiple targets with same token (e.g., replicas)
+PIHOLE_API=http://10.0.0.2/api,http://10.0.0.3/api
+PIHOLE_TOKEN=shared_token
 ```
 
 ### Using Docker Hub

@@ -15,7 +15,7 @@
 import unittest
 
 from avahi import HostRecord
-from sync import sync_iteration
+from sync import sync_iteration, parse_targets
 
 
 class FakePiHoleClient:
@@ -141,6 +141,64 @@ class SyncIterationTests(unittest.TestCase):
         }
         self.assertEqual(expected, result)
         self.assertEqual(expected, pihole.updated_hosts)
+
+
+class ParseTargetsTests(unittest.TestCase):
+    def test_single_target(self):
+        result = parse_targets("http://10.0.0.2/api", "token1")
+        self.assertEqual([("http://10.0.0.2/api", "token1")], result)
+
+    def test_multiple_targets_matching_counts(self):
+        result = parse_targets(
+            "http://10.0.0.2/api,http://10.0.0.3/api",
+            "token1,token2"
+        )
+        expected = [
+            ("http://10.0.0.2/api", "token1"),
+            ("http://10.0.0.3/api", "token2"),
+        ]
+        self.assertEqual(expected, result)
+
+    def test_multiple_apis_single_token(self):
+        result = parse_targets(
+            "http://10.0.0.2/api,http://10.0.0.3/api",
+            "shared_token"
+        )
+        expected = [
+            ("http://10.0.0.2/api", "shared_token"),
+            ("http://10.0.0.3/api", "shared_token"),
+        ]
+        self.assertEqual(expected, result)
+
+    def test_single_api_multiple_tokens(self):
+        result = parse_targets(
+            "http://10.0.0.2/api",
+            "token1,token2"
+        )
+        expected = [
+            ("http://10.0.0.2/api", "token1"),
+            ("http://10.0.0.2/api", "token2"),
+        ]
+        self.assertEqual(expected, result)
+
+    def test_mismatched_counts_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            parse_targets(
+                "http://a/api,http://b/api,http://c/api",
+                "token1,token2"
+            )
+        self.assertIn("Mismatch", str(ctx.exception))
+
+    def test_strips_whitespace(self):
+        result = parse_targets(
+            " http://10.0.0.2/api , http://10.0.0.3/api ",
+            " token1 , token2 "
+        )
+        expected = [
+            ("http://10.0.0.2/api", "token1"),
+            ("http://10.0.0.3/api", "token2"),
+        ]
+        self.assertEqual(expected, result)
 
 
 if __name__ == "__main__":

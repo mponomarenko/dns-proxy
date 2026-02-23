@@ -163,11 +163,8 @@ def sync_iteration(
     dns_map = pihole_client.fetch_hosts()
 
     records = avahi_client.discover_hosts(domain_suffix, keep_local=keep_local)
-    if debug:
-        avahi_debug = {
-            record.fqdn: list(record.candidates) for record in records
-        }
-        _debug_log(debug, f"Avahi hosts discovered: {avahi_debug}")
+    avahi_debug = {record.fqdn: list(record.candidates) for record in records}
+    _debug_log(debug, f"Avahi hosts discovered: {avahi_debug}")
 
     updated = apply_avahi_records(dns_map, records, overrides=overrides, debug=debug)
 
@@ -255,6 +252,25 @@ def apply_avahi_records(
     return updated
 
 
+def parse_targets(api_env: str, token_env: str) -> List[tuple]:
+    """Parse comma-separated Pi-hole API URLs and tokens into target pairs."""
+    apis = [url.strip() for url in api_env.split(",") if url.strip()]
+    tokens = [tok.strip() for tok in token_env.split(",") if tok.strip()]
+
+    if len(apis) == 1 and len(tokens) > 1:
+        # Single API with multiple tokens - replicate API for each token
+        apis = apis * len(tokens)
+    elif len(tokens) == 1 and len(apis) > 1:
+        # Multiple APIs with single token - replicate token for each API
+        tokens = tokens * len(apis)
+    elif len(apis) != len(tokens):
+        raise RuntimeError(
+            f"Mismatch: {len(apis)} PIHOLE_API URLs but {len(tokens)} PIHOLE_TOKEN values"
+        )
+
+    return list(zip(apis, tokens))
+
+
 def main() -> None:
     pihole_api = os.getenv("PIHOLE_API", "http://10.0.0.2/api")
     pihole_token = os.getenv("PIHOLE_TOKEN")
@@ -269,30 +285,62 @@ def main() -> None:
 
     _debug_log(debug_enabled, "Debug logging enabled")
 
+    targets = parse_targets(pihole_api, pihole_token)
+    if len(targets) > 1:
+        print(f"[INFO] Configured {len(targets)} Pi-hole targets (fan-out mode)")
+
     overrides = load_overrides(overrides_file)
     if overrides:
         print(f"[INFO] Loaded {len(overrides)} DNS overrides: {list(overrides.keys())}")
 
     avahi_client = AvahiClient(debug=debug_enabled)
-    pihole_client = None
-    try:
-        pihole_client = PiHoleClient(pihole_api, pihole_token, debug=debug_enabled)
-        sync_iteration(
-            pihole_client,
-            avahi_client,
-            domain_suffix,
-            keep_local=keep_local,
-            overrides=overrides,
-            debug=debug_enabled,
-        )
-    except RuntimeError as exc:
-        print(f"[ERROR] {exc}", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        if pihole_client is not None:
-            pihole_client.close()
+    pihole_clients: List[PiHoleClient] = []
+    errors = []
 
-    print("[INFO] Sync complete.")
+    multi = len(targets) > 1
+    target_name = lambda i: f"Pi-hole #{i}" if multi else "Pi-hole"
+
+    try:
+        # Connect to all Pi-hole targets
+        for i, (api_url, token) in enumerate(targets, 1):
+            try:
+                client = PiHoleClient(api_url, token, debug=debug_enabled)
+                pihole_clients.append(client)
+                _debug_log(debug_enabled, f"{target_name(i)}: connected to {api_url}")
+            except RuntimeError as exc:
+                errors.append(f"{target_name(i)} ({api_url}): {exc}")
+
+        if not pihole_clients:
+            print("[ERROR] Failed to connect to any Pi-hole targets:", file=sys.stderr)
+            for err in errors:
+                print(f"  - {err}", file=sys.stderr)
+            sys.exit(1)
+
+        if errors:
+            print(f"[WARN] Failed to connect to {len(errors)} target(s):", file=sys.stderr)
+            for err in errors:
+                print(f"  - {err}", file=sys.stderr)
+
+        # Sync to all connected targets
+        for i, client in enumerate(pihole_clients, 1):
+            try:
+                sync_iteration(
+                    client,
+                    avahi_client,
+                    domain_suffix,
+                    keep_local=keep_local,
+                    overrides=overrides,
+                    debug=debug_enabled,
+                )
+                _debug_log(debug_enabled, f"{target_name(i)}: sync complete")
+            except RuntimeError as exc:
+                print(f"[ERROR] {target_name(i)}: {exc}", file=sys.stderr)
+
+    finally:
+        for client in pihole_clients:
+            client.close()
+
+    print(f"[INFO] Sync complete ({len(pihole_clients)} target(s)).")
 
 
 if __name__ == "__main__":

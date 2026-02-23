@@ -40,8 +40,13 @@ class AvahiClient:
 
     def discover_hosts(self, domain_suffix: str, keep_local: bool = False) -> List[HostRecord]:
         raw = self._run_browse()
-        candidates = self._collect_candidates(raw, ipv4_only=True)
-        all_candidates = self._collect_candidates(raw, ipv4_only=False)
+        all_candidates = self._collect_candidates(raw)
+        # Filter to IPv4 only for primary candidates
+        candidates = {
+            name: [ip for ip in ips if ":" not in ip]
+            for name, ips in all_candidates.items()
+        }
+        candidates = {name: ips for name, ips in candidates.items() if ips}
         if not candidates:
             print("[ERROR] No IPv4 mDNS records discovered via avahi-browse", file=sys.stderr)
         else:
@@ -50,7 +55,7 @@ class AvahiClient:
         records = []
         for base_name, ips in candidates.items():
             ordered_ips = list(ips)
-            all_ips = all_candidates.get(base_name, ordered_ips)
+            all_ips = all_candidates.get(base_name, [])
             preferred = self._resolve_preferred(base_name, ordered_ips)
             fqdn = f"{base_name}.{domain_suffix}" if domain_suffix else base_name
             suffixes = [fqdn]
@@ -84,14 +89,12 @@ class AvahiClient:
             return ""
 
     @staticmethod
-    def _collect_candidates(raw: str, ipv4_only: bool = True) -> Dict[str, List[str]]:
+    def _collect_candidates(raw: str) -> Dict[str, List[str]]:
         seen = set()
         candidates: Dict[str, List[str]] = {}
         for line in raw.splitlines():
             is_ipv4 = "IPv4" in line
             is_ipv6 = "IPv6" in line
-            if ipv4_only and not is_ipv4:
-                continue
             if not is_ipv4 and not is_ipv6:
                 continue
             cols = line.split(";")
@@ -110,9 +113,7 @@ class AvahiClient:
             if key in seen:
                 continue
             seen.add(key)
-            host_ips = candidates.setdefault(base_name, [])
-            if ip_field not in host_ips:
-                host_ips.append(ip_field)
+            candidates.setdefault(base_name, []).append(ip_field)
         return candidates
 
     def _resolve_preferred(self, base_name: str, candidates: List[str]) -> str:
