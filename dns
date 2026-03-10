@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""dns - Pi-hole DNS record management CLI
+
+Commands:
+  list [pattern]          List all records, optionally filtered by pattern
+  get <hostname>          Show record(s) for a specific hostname
+  add <ip> <hostname>     Add a DNS record
+  delete <hostname>...    Delete one or more records by exact hostname
+  purge <pattern>         Delete all records whose hostname contains pattern
+
+Config (env vars, same as dns-proxy):
+  PIHOLE_API    Comma-separated API URLs  (default: http://10.0.0.2/api)
+  PIHOLE_TOKEN  Comma-separated passwords (required)
+
+.env search order (first found wins):
+  1. .env next to this script  (dns-proxy repo)
+  2. ~/homelab/ansible/secrets/pihole.env
+"""
+
+import os
+import sys
+
+def _load_env(path: str) -> bool:
+    if not os.path.exists(path):
+        return False
+    with open(path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, _, v = line.partition("=")
+                os.environ.setdefault(k.strip(), v.strip())
+    return True
+
+_script_dir = os.path.dirname(os.path.realpath(__file__))
+_loaded = (
+    _load_env(os.path.join(_script_dir, ".env"))
+    or _load_env(os.path.expanduser("~/homelab/ansible/secrets/pihole.env"))
+)
+
+import requests  # noqa: E402
+from sync import PiHoleClient, parse_targets  # noqa: E402
+
+
+def _clients() -> list:
+    api = os.getenv("PIHOLE_API", "http://10.0.0.2/api")
+    token = os.getenv("PIHOLE_TOKEN", "")
+    if not token:
+        print("ERROR: PIHOLE_TOKEN not set", file=sys.stderr)
+        sys.exit(1)
+    targets = parse_targets(api, token)
+    clients = []
+    for url, tok in targets:
+        try:
+            clients.append((url, PiHoleClient(url, tok)))
+        except Exception as e:
+            print(f"WARN: could not connect to {url}: {e}", file=sys.stderr)
+    if not clients:
+        print("ERROR: no Pi-hole instances reachable", file=sys.stderr)
+        sys.exit(1)
+    return clients
+
+
+def _fetch_raw(client: PiHoleClient) -> list:
+    resp = client.session.get(
+        f"{client.api_url}/config/dns%2Fhosts", headers=client.headers
+    )
+    resp.raise_for_status()
+    return resp.json().get("config", {}).get("dns", {}).get("hosts", [])
+
+
+def _patch_raw(client: PiHoleClient, hosts: list) -> None:
+    resp = client.session.patch(
+        f"{client.api_url}/config/dns%2Fhosts",
+        headers=client.headers,
+        json={"config": {"dns": {"hosts": sorted(hosts)}}},
+    )
+    if not resp.ok:
+        raise RuntimeError(f"PATCH failed: {resp.status_code} {resp.text}")
+
+
+def cmd_list(args: list) -> None:
+    pattern = args[0].lower() if args else None
+    url, client = _clients()[0]
+    entries = _fetch_raw(client)
+    client.close()
+    matched = [e for e in entries if not pattern or pattern in e.lower()]
+    if not matched:
+        print("(no records found)")
+        return
+    for e in sorted(matched):
+        parts = e.split(None, 1)
+        if len(parts) == 2:
+            print(f"{parts[1]:<45} {parts[0]}")
+        else:
+            print(e)
+
+
+def cmd_get(args: list) -> None:
+    if not args:
+        print("Usage: dns get <hostname>", file=sys.stderr)
+        sys.exit(1)
+    cmd_list(args)
+
+
+def cmd_add(args: list) -> None:
+    if len(args) < 2:
+        print("Usage: dns add <ip> <hostname>", file=sys.stderr)
+        sys.exit(1)
+    ip, hostname = args[0], args[1]
+    entry = f"{ip} {hostname}"
+    for url, client in _clients():
+        hosts = _fetch_raw(client)
+        if entry in hosts:
+            print(f"[{url}] already exists: {hostname} -> {ip}")
+        else:
+            hosts.append(entry)
+            _patch_raw(client, hosts)
+            print(f"[{url}] added: {hostname} -> {ip}")
+        client.close()
+
+
+def cmd_delete(args: list) -> None:
+    if not args:
+        print("Usage: dns delete <hostname>...", file=sys.stderr)
+        sys.exit(1)
+    targets = {h.lower() for h in args}
+    for url, client in _clients():
+        hosts = _fetch_raw(client)
+        before = len(hosts)
+        kept = [e for e in hosts if e.split(None, 1)[-1].lower() not in targets]
+        removed = before - len(kept)
+        if removed:
+            _patch_raw(client, kept)
+            print(f"[{url}] deleted {removed} record(s): {', '.join(args)}")
+        else:
+            print(f"[{url}] not found: {', '.join(args)}")
+        client.close()
+
+
+def cmd_purge(args: list) -> None:
+    if not args:
+        print("Usage: dns purge <pattern>", file=sys.stderr)
+        sys.exit(1)
+    pattern = args[0].lower()
+    for url, client in _clients():
+        hosts = _fetch_raw(client)
+        before = len(hosts)
+        kept = [e for e in hosts if pattern not in e.lower()]
+        removed = before - len(kept)
+        if removed:
+            _patch_raw(client, kept)
+            print(f"[{url}] purged {removed} record(s) matching '{pattern}'")
+        else:
+            print(f"[{url}] no records matching '{pattern}'")
+        client.close()
+
+
+COMMANDS = {
+    "list": cmd_list,
+    "get": cmd_get,
+    "add": cmd_add,
+    "delete": cmd_delete,
+    "purge": cmd_purge,
+}
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__)
+        sys.exit(0)
+    cmd = args[0]
+    if cmd not in COMMANDS:
+        print(f"Unknown command: {cmd}\nCommands: {', '.join(COMMANDS)}", file=sys.stderr)
+        sys.exit(1)
+    COMMANDS[cmd](args[1:])
+
+
+if __name__ == "__main__":
+    main()
