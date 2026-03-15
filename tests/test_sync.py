@@ -13,9 +13,12 @@
 # limitations under the License.
 
 import unittest
+from unittest import mock
 
 from avahi import HostRecord
-from sync import sync_iteration, parse_targets
+import requests
+
+from sync import PiHoleClient, parse_targets, sync_iteration
 
 
 class FakePiHoleClient:
@@ -158,6 +161,19 @@ class ParseTargetsTests(unittest.TestCase):
             ("http://10.0.0.3/api", "token2"),
         ]
         self.assertEqual(expected, result)
+
+
+class PiHoleClientTests(unittest.TestCase):
+    def test_auth_connection_error_is_wrapped(self):
+        client = object.__new__(PiHoleClient)
+        client.api_url = "http://10.0.0.3/api"
+        client.session = mock.Mock()
+        client.session.post.side_effect = requests.ConnectionError("no route to host")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            PiHoleClient._authenticate(client, "token")
+
+        self.assertIn("Pi-hole connection failed", str(ctx.exception))
 
     def test_multiple_apis_single_token(self):
         result = parse_targets(

@@ -42,7 +42,13 @@ class PiHoleClient:
         clean_token = token.strip()
         if not clean_token:
             raise RuntimeError("Empty PIHOLE_TOKEN after stripping whitespace")
-        auth_resp = self.session.post(f"{self.api_url}/auth", json={"password": clean_token})
+        try:
+            auth_resp = self.session.post(
+                f"{self.api_url}/auth",
+                json={"password": clean_token},
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Pi-hole connection failed: {exc}") from exc
         try:
             auth_resp.raise_for_status()
         except requests.HTTPError as exc:
@@ -62,8 +68,11 @@ class PiHoleClient:
         return {"accept": "application/json", "sid": self.sid}
 
     def fetch_hosts(self) -> Dict[str, str]:
-        resp = self.session.get(f"{self.api_url}/config/dns%2Fhosts", headers=self.headers)
-        resp.raise_for_status()
+        try:
+            resp = self.session.get(f"{self.api_url}/config/dns%2Fhosts", headers=self.headers)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Pi-hole fetch failed: {exc}") from exc
         cfg = resp.json()
         dns_map: Dict[str, str] = {}
         for entry in cfg.get("config", {}).get("dns", {}).get("hosts", []):
@@ -92,11 +101,14 @@ class PiHoleClient:
                 f"[DEBUG] Updating Pi-hole with {len(hosts_list)} host entries",
                 file=sys.stderr,
             )
-        set_resp = self.session.patch(
-            f"{self.api_url}/config/dns%2Fhosts",
-            headers=self.headers,
-            json=payload,
-        )
+        try:
+            set_resp = self.session.patch(
+                f"{self.api_url}/config/dns%2Fhosts",
+                headers=self.headers,
+                json=payload,
+            )
+        except requests.RequestException as exc:
+            raise RuntimeError(f"Pi-hole update failed: {exc}") from exc
         if not set_resp.ok:
             raise RuntimeError(
                 f"Failed to update Pi-hole config: {set_resp.status_code} {set_resp.text}"
