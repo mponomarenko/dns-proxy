@@ -16,7 +16,7 @@
 
 import os
 import sys
-from typing import Dict, Iterable, List, Union
+from typing import Dict, Iterable, List, Optional, Union
 
 import requests
 
@@ -126,19 +126,36 @@ class PiHoleClient:
             self.session.close()
 
 
-def load_overrides(file_path: str) -> Dict[str, str]:
-    """Load DNS overrides from hosts-format file: 'IP hostname [alias...]'"""
-    if not file_path or not os.path.exists(file_path):
+def load_overrides(file_path: str, avahi_client: Optional["AvahiClient"] = None) -> Dict[str, str]:
+    """Load DNS overrides from hosts-format file: 'IP-or-.local hostname [alias...]'
+
+    The first field may be a static IP or a .local hostname to resolve via Avahi.
+    """
+    if not file_path:
+        return {}
+    try:
+        f_obj = open(file_path, "r")
+    except FileNotFoundError:
         return {}
     result = {}
-    with open(file_path, "r") as f:
-        for line in f:
+    with f_obj:
+        for line in f_obj:
             line = line.split("#")[0].strip()
             if not line:
                 continue
             parts = line.split()
             if len(parts) >= 2:
-                ip = parts[0]
+                ip_or_host = parts[0]
+                if ip_or_host.endswith(".local"):
+                    if avahi_client is None:
+                        print(f"[WARN] Override: cannot resolve {ip_or_host} without avahi client; skipping", file=sys.stderr)
+                        continue
+                    ip = avahi_client.resolve_hostname(ip_or_host)
+                    if not ip:
+                        print(f"[WARN] Override: could not resolve {ip_or_host}; skipping", file=sys.stderr)
+                        continue
+                else:
+                    ip = ip_or_host
                 for hostname in parts[1:]:
                     result[hostname] = ip
     return result
@@ -301,11 +318,11 @@ def main() -> None:
     if len(targets) > 1:
         print(f"[INFO] Configured {len(targets)} Pi-hole targets (fan-out mode)")
 
-    overrides = load_overrides(overrides_file)
+    avahi_client = AvahiClient(debug=debug_enabled)
+
+    overrides = load_overrides(overrides_file, avahi_client=avahi_client)
     if overrides:
         print(f"[INFO] Loaded {len(overrides)} DNS overrides: {list(overrides.keys())}")
-
-    avahi_client = AvahiClient(debug=debug_enabled)
     pihole_clients: List[PiHoleClient] = []
     errors = []
 

@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
+import tempfile
 import unittest
 from unittest import mock
 
 from avahi import HostRecord
 import requests
 
-from sync import PiHoleClient, parse_targets, sync_iteration
+from sync import PiHoleClient, load_overrides, parse_targets, sync_iteration
 
 
 class FakePiHoleClient:
@@ -215,6 +217,69 @@ class PiHoleClientTests(unittest.TestCase):
             ("http://10.0.0.3/api", "token2"),
         ]
         self.assertEqual(expected, result)
+
+
+class LoadOverridesTests(unittest.TestCase):
+    def _write_overrides(self, content: str) -> str:
+        f = tempfile.NamedTemporaryFile(mode="w", suffix=".overrides", delete=False)
+        f.write(content)
+        f.close()
+        return f.name
+
+    def test_static_ip(self):
+        path = self._write_overrides("10.0.0.10 rescue.home\n")
+        try:
+            self.assertEqual({"rescue.home": "10.0.0.10"}, load_overrides(path))
+        finally:
+            os.unlink(path)
+
+    def test_static_ip_multiple_aliases(self):
+        path = self._write_overrides("10.0.0.11 rescue-fast.home rescue-usb.home\n")
+        try:
+            result = load_overrides(path)
+            self.assertEqual({"rescue-fast.home": "10.0.0.11", "rescue-usb.home": "10.0.0.11"}, result)
+        finally:
+            os.unlink(path)
+
+    def test_local_hostname_resolved(self):
+        avahi = mock.Mock()
+        avahi.resolve_hostname.return_value = "10.0.200.116"
+        path = self._write_overrides("hdhomerun.local hdhomerun.home\n")
+        try:
+            result = load_overrides(path, avahi_client=avahi)
+            self.assertEqual({"hdhomerun.home": "10.0.200.116"}, result)
+            avahi.resolve_hostname.assert_called_once_with("hdhomerun.local")
+        finally:
+            os.unlink(path)
+
+    def test_local_hostname_resolution_failure_skips(self):
+        avahi = mock.Mock()
+        avahi.resolve_hostname.return_value = ""
+        path = self._write_overrides("missing.local missing.home\n")
+        try:
+            self.assertEqual({}, load_overrides(path, avahi_client=avahi))
+        finally:
+            os.unlink(path)
+
+    def test_local_hostname_without_avahi_client_skips(self):
+        path = self._write_overrides("hdhomerun.local hdhomerun.home\n")
+        try:
+            self.assertEqual({}, load_overrides(path, avahi_client=None))
+        finally:
+            os.unlink(path)
+
+    def test_missing_file_returns_empty(self):
+        self.assertEqual({}, load_overrides("/nonexistent/path/overrides"))
+
+    def test_empty_path_returns_empty(self):
+        self.assertEqual({}, load_overrides(""))
+
+    def test_comments_and_blank_lines_ignored(self):
+        path = self._write_overrides("# a comment\n\n10.0.0.10 rescue.home # inline\n")
+        try:
+            self.assertEqual({"rescue.home": "10.0.0.10"}, load_overrides(path))
+        finally:
+            os.unlink(path)
 
 
 if __name__ == "__main__":

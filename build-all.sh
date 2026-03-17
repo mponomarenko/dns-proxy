@@ -17,6 +17,11 @@
 # Multi-platform build for both ARM64 and x64 architectures
 # Requires docker buildx with multi-platform support
 # Uses QEMU v8.1.5 to avoid segfaults in ARM64 emulation (https://github.com/tonistiigi/binfmt/issues/245)
+#
+# KNOWN ISSUE: Running this script on ARM64 hardware (e.g. Raspberry Pi) to cross-compile
+# amd64 will fail with a libc-bin post-install segfault (exit 139) during apt-get install.
+# This is a QEMU amd64-on-ARM64 emulation bug — even qemu-v8.1.5 does not fix it.
+# Workaround: run build-all.sh from an x86_64 host where amd64 is native and arm64 is emulated.
 
 # Set up QEMU with older version to avoid segmentation faults
 docker run --privileged --rm tonistiigi/binfmt:qemu-v8.1.5 --install all

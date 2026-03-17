@@ -126,6 +126,11 @@ class AvahiClient:
                 candidates.insert(0, resolved_ip)
         return candidates[0] if candidates else resolved_ip or ""
 
+    def resolve_hostname(self, hostname: str) -> str:
+        """Resolve a .local hostname to its IPv4 address via Avahi."""
+        base = hostname[:-6] if hostname.endswith(".local") else hostname
+        return self._resolve_ipv4(base)
+
     def _resolve_ipv4(self, base_name: str) -> str:
         mdns_name = f"{base_name}.local"
         try:
