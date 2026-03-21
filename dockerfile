@@ -15,8 +15,10 @@
 FROM ubuntu:22.04
 #FROM debian:bullseye-slim - this fails on qemu libc-bin
 
+ENV DEBIAN_FRONTEND=noninteractive
+
 RUN apt-get update && \
-    apt-get install -y \
+    apt-get install -y --no-install-recommends \
         avahi-daemon \
         avahi-utils \
         bash \
@@ -26,11 +28,10 @@ RUN apt-get update && \
         python3 \
         python3-pip \
         && \
-    apt-get clean
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install requests
-    
-SHELL ["/bin/bash", "-c"]
 
 COPY sync.py /usr/local/bin/sync.py
 RUN chmod +x /usr/local/bin/sync.py
