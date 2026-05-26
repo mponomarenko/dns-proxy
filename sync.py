@@ -307,6 +307,7 @@ def main() -> None:
     debug_enabled = os.getenv("DEBUG", "0") == "1"
     keep_local = os.getenv("KEEP_LOCAL", "0") == "1"
     overrides_file = os.getenv("DNS_OVERRIDES_FILE", "/config/overrides")
+    static_hosts_env = os.getenv("DNS_STATIC_HOSTS", "")
 
     if not pihole_token:
         print("[ERROR] Missing API token (PIHOLE_TOKEN)", file=sys.stderr)
@@ -321,6 +322,18 @@ def main() -> None:
     avahi_client = AvahiClient(debug=debug_enabled)
 
     overrides = load_overrides(overrides_file, avahi_client=avahi_client)
+
+    # Merge DNS_STATIC_HOSTS env var: comma-separated "IP=hostname" pairs
+    # e.g. DNS_STATIC_HOSTS=10.0.0.50=compute.home,10.0.0.51=other.home
+    if static_hosts_env:
+        for entry in static_hosts_env.split(","):
+            entry = entry.strip()
+            if "=" not in entry:
+                print(f"[WARN] DNS_STATIC_HOSTS: skipping invalid entry '{entry}' (expected IP=hostname)", file=sys.stderr)
+                continue
+            ip, hostname = entry.split("=", 1)
+            overrides[hostname.strip()] = ip.strip()
+
     if overrides:
         print(f"[INFO] Loaded {len(overrides)} DNS overrides: {list(overrides.keys())}")
     pihole_clients: List[PiHoleClient] = []

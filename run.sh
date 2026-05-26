@@ -22,6 +22,8 @@
 # AVAHI_DISABLE_AUTOSTART: set to 1 to disable auto-start of avahi-daemon and dbus-daemon
 # DNS_OVERRIDES_FILE: path to hosts-format overrides file (default: /config/overrides)
 #                     format: "IP hostname" per line, like /etc/hosts
+# DNS_STATIC_HOSTS:   comma-separated static entries, e.g. "10.0.0.50=compute.home,10.0.0.51=other.home"
+#                     takes precedence over Avahi discovery; merged with DNS_OVERRIDES_FILE
 
 
 # On Host Machine, run this:
