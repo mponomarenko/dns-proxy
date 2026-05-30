@@ -68,13 +68,15 @@ PIHOLE_TOKEN=shared_token
 ### Using Docker Hub
 
 ```bash
-
 sudo docker run  \
+    --restart=unless-stopped \
     --network=host \
     -v /var/run/dbus/system_bus_socket:/var/run/dbus/system_bus_socket \
     --env-file .env \
     mikesplay/dns-proxy:test
 ```
+
+Use `unless-stopped` (not the default `no`) so a transient Pi-hole or network failure does not leave the service dead.
 
 ### Building from Source
 

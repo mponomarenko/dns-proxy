@@ -122,6 +122,8 @@ class PiHoleClient:
                     f"[WARN] Pi-hole logout failed: {del_resp.status_code} {del_resp.text.strip()}",
                     file=sys.stderr,
                 )
+        except requests.RequestException as exc:
+            print(f"[WARN] Pi-hole logout request failed: {exc}", file=sys.stderr)
         finally:
             self.session.close()
 

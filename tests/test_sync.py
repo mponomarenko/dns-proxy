@@ -218,6 +218,16 @@ class PiHoleClientTests(unittest.TestCase):
         ]
         self.assertEqual(expected, result)
 
+    def test_close_tolerates_connection_error(self):
+        client = object.__new__(PiHoleClient)
+        client.api_url = "http://10.0.0.3/api"
+        client.sid = "fake-sid"
+        client.session = mock.Mock()
+        client.session.delete.side_effect = requests.ConnectionError("refused")
+
+        client.close()
+        client.session.close.assert_called_once()
+
 
 class LoadOverridesTests(unittest.TestCase):
     def _write_overrides(self, content: str) -> str:
