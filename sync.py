@@ -29,6 +29,13 @@ def _debug_log(enabled: bool, message: str) -> None:
 
 
 class PiHoleClient:
+    # (connect, read) timeout for every Pi-hole API call. Without this, a
+    # stalled/unresponsive Pi-hole leaves `requests` blocking forever, which
+    # hangs the sync subprocess mid-cycle with no exception and no log output
+    # -- the run.sh loop never reaches its sleep/next-iteration, so the
+    # container stays "Up" while the sync loop is silently dead forever.
+    REQUEST_TIMEOUT = (5, 30)
+
     def __init__(self, api_url: str, token: str, debug: bool = False):
         self.api_url = api_url
         self.session = requests.Session()
@@ -46,6 +53,7 @@ class PiHoleClient:
             auth_resp = self.session.post(
                 f"{self.api_url}/auth",
                 json={"password": clean_token},
+                timeout=self.REQUEST_TIMEOUT,
             )
         except requests.RequestException as exc:
             raise RuntimeError(f"Pi-hole connection failed: {exc}") from exc
@@ -69,7 +77,11 @@ class PiHoleClient:
 
     def fetch_hosts(self) -> Dict[str, str]:
         try:
-            resp = self.session.get(f"{self.api_url}/config/dns%2Fhosts", headers=self.headers)
+            resp = self.session.get(
+                f"{self.api_url}/config/dns%2Fhosts",
+                headers=self.headers,
+                timeout=self.REQUEST_TIMEOUT,
+            )
             resp.raise_for_status()
         except requests.RequestException as exc:
             raise RuntimeError(f"Pi-hole fetch failed: {exc}") from exc
@@ -106,6 +118,7 @@ class PiHoleClient:
                 f"{self.api_url}/config/dns%2Fhosts",
                 headers=self.headers,
                 json=payload,
+                timeout=self.REQUEST_TIMEOUT,
             )
         except requests.RequestException as exc:
             raise RuntimeError(f"Pi-hole update failed: {exc}") from exc
@@ -116,7 +129,11 @@ class PiHoleClient:
 
     def close(self) -> None:
         try:
-            del_resp = self.session.delete(f"{self.api_url}/auth", headers=self.headers)
+            del_resp = self.session.delete(
+                f"{self.api_url}/auth",
+                headers=self.headers,
+                timeout=self.REQUEST_TIMEOUT,
+            )
             if not del_resp.ok:
                 print(
                     f"[WARN] Pi-hole logout failed: {del_resp.status_code} {del_resp.text.strip()}",
