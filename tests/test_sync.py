@@ -122,7 +122,7 @@ class SyncIterationTests(unittest.TestCase):
         expected = {"tower.home": ["10.0.115.4", "10.0.115.5"]}
         self.assertEqual(expected, result)
         self.assertEqual(expected, pihole.updated_hosts)
-        self.assertEqual(expected, pihole.verified_hosts)
+        self.assertEqual({"tower.home": "10.0.115.5"}, pihole.verified_hosts)
 
     def test_adds_missing_host_and_retains_existing(self):
         pihole = FakePiHoleClient({"nas.home": "10.0.0.20"})
@@ -151,6 +151,24 @@ class SyncIterationTests(unittest.TestCase):
         }
         self.assertEqual(expected, result)
         self.assertEqual(expected, pihole.updated_hosts)
+
+    def test_verifies_current_snapshot_without_requiring_old_records(self):
+        pihole = FakePiHoleClient({"retained.home": "10.0.0.20"})
+        avahi = MockAvahiClient(
+            [
+                HostRecord(
+                    base_name="printer",
+                    fqdn="printer.local",
+                    preferred_ip="10.0.0.50",
+                    candidates=("10.0.0.50",),
+                )
+            ]
+        )
+
+        sync_iteration(pihole, avahi, "home", keep_local=False)
+
+        self.assertEqual({"printer.home": "10.0.0.50"}, pihole.verified_hosts)
+        self.assertIn("retained.home", pihole.updated_hosts)
 
     def test_keep_local_adds_local_variant(self):
         pihole = FakePiHoleClient({})

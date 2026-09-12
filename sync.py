@@ -276,9 +276,17 @@ def sync_iteration(
 
     updated = apply_avahi_records(dns_map, records, overrides=overrides, debug=debug)
 
+    # Verify the names represented by this cycle, not every historical entry
+    # retained in Pi-hole.  Retaining old entries is intentional safety
+    # behavior: a partial mDNS view must never delete a name.  Requiring those
+    # old entries to resolve would turn harmless preserved state into a failed
+    # sync and would prevent the healthy current snapshot from being counted.
+    verification_map = apply_avahi_records({}, records, overrides=overrides)
+
     # Apply overrides (for hosts not discovered via Avahi)
     if overrides:
         updated = apply_overrides(updated, overrides, debug=debug)
+        verification_map = apply_overrides(verification_map, overrides, debug=debug)
 
     _debug_log(
         debug,
@@ -286,7 +294,7 @@ def sync_iteration(
     )
 
     pihole_client.update_hosts(updated)
-    pihole_client.verify_hosts(updated)
+    pihole_client.verify_hosts(verification_map)
     return updated
 
 

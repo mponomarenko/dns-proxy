@@ -10,7 +10,7 @@ in Gitea.
 - [x] #4 Bound Avahi browse/resolve subprocesses so hangs cannot bypass the one-hour outage deadline.
 - [x] #5 Discover mDNS once per cycle and fan out one frozen snapshot to every reachable Pi-hole.
 - [x] #6 Detect partial mDNS views and reject unsafe address replacements while preserving existing records.
-- [ ] #7 Read back and verify Pi-hole updates before counting a target as successful.
+- [x] #7 Read back and verify Pi-hole updates before counting a target as successful.
 - [x] #8 Track and report per-target Pi-hole health while retaining the “at least one works” availability rule.
 - [x] #9 Use monotonic, restart-visible outage timing so restarts cannot hide a continuous outage.
 - [x] #10 Add a functional heartbeat/success Docker health check for hung or degraded proxies.
