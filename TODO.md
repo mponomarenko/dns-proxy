@@ -1,6 +1,6 @@
 # TODO
 
-Gitea tracking: these items are `mikep/dns-proxy#1`–`#3`, in source order,
+Gitea tracking: these items are `mikep/dns-proxy#1`–`#11`, in source order,
 including the first resilience item filed during the audit. Full details live
 in Gitea.
 
