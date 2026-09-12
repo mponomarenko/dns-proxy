@@ -595,11 +595,13 @@ def main() -> bool:
     overrides_file = os.getenv("DNS_OVERRIDES_FILE", "/config/overrides")
     static_hosts_env = os.getenv("DNS_STATIC_HOSTS", "")
     min_mdns_hosts = int(os.getenv("MIN_MDNS_HOSTS", "1"))
-    mdns_baseline_file = os.getenv("MDNS_BASELINE_FILE", "/config/mdns-baseline.json")
+    mdns_baseline_file = os.getenv(
+        "MDNS_BASELINE_FILE", "/config/state/mdns-baseline.json"
+    )
     mdns_baseline_ratio = float(os.getenv("MDNS_BASELINE_RATIO", "0.7"))
     baseline_hosts = load_mdns_baseline(mdns_baseline_file)
     target_health_file = os.getenv(
-        "PIHOLE_TARGET_HEALTH_FILE", "/config/pihole-target-health.json"
+        "PIHOLE_TARGET_HEALTH_FILE", "/config/state/pihole-target-health.json"
     )
     target_health = load_target_health(target_health_file)
 

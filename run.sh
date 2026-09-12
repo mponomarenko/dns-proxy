@@ -21,6 +21,10 @@
 # INTERVAL: sleep time in seconds between syncs (default: 300)
 # MAX_SYNC_OUTAGE_SECONDS: exit after this long without a successful sync (default: 3600)
 # MIN_MDNS_HOSTS: fail a sync when fewer than this many unique mDNS hosts are discovered (default: 1)
+# MDNS_BASELINE_FILE: persistent host-count baseline (default: /config/state/mdns-baseline.json)
+# MDNS_BASELINE_RATIO: minimum fraction of baseline hosts accepted (default: 0.7)
+# PIHOLE_TARGET_HEALTH_FILE: persistent per-target health state (default: /config/state/pihole-target-health.json)
+# OUTAGE_STATE_FILE: persistent last-success state (default: /config/state/outage-state)
 # AVAHI_DISABLE_AUTOSTART: set to 1 to disable auto-start of avahi-daemon and dbus-daemon
 # DNS_OVERRIDES_FILE: path to hosts-format overrides file (default: /config/overrides)
 #                     format: "IP hostname" per line, like /etc/hosts
@@ -42,6 +46,7 @@ DOMAIN_SUFFIX="${DOMAIN_SUFFIX:-local}"
 INTERVAL="${INTERVAL:-300}"
 MAX_SYNC_OUTAGE_SECONDS="${MAX_SYNC_OUTAGE_SECONDS:-3600}"
 MIN_MDNS_HOSTS="${MIN_MDNS_HOSTS:-1}"
+OUTAGE_STATE_FILE="${OUTAGE_STATE_FILE:-/config/state/outage-state}"
 
 echo "[STARTUP] Avahi to Pi-hole sync container started"
 echo "[CONFIG] PIHOLE_API=$PIHOLE_API"
@@ -49,6 +54,7 @@ echo "[CONFIG] DOMAIN_SUFFIX=$DOMAIN_SUFFIX"
 echo "[CONFIG] INTERVAL=${INTERVAL}s"
 echo "[CONFIG] MAX_SYNC_OUTAGE_SECONDS=${MAX_SYNC_OUTAGE_SECONDS}s"
 echo "[CONFIG] MIN_MDNS_HOSTS=${MIN_MDNS_HOSTS}"
+echo "[CONFIG] OUTAGE_STATE_FILE=${OUTAGE_STATE_FILE}"
 
 log(){ printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 
@@ -119,7 +125,21 @@ avahi_ok || start_avahi
 
 
 # 4) Run the sync loop
-last_success_epoch="$(date +%s)"
+now_epoch="$(date +%s)"
+last_success_epoch="$now_epoch"
+if [ -r "$OUTAGE_STATE_FILE" ]; then
+  saved_success_epoch="$(sed -n '1p' "$OUTAGE_STATE_FILE")"
+  case "$saved_success_epoch" in
+    ''|*[!0-9]*) ;;
+    *)
+      # A backwards clock correction must not create a negative outage age.
+      if [ "$saved_success_epoch" -le "$now_epoch" ]; then
+        last_success_epoch="$saved_success_epoch"
+      fi
+      ;;
+  esac
+fi
+last_success_monotonic="$SECONDS"
 outage_started_epoch=""
 while true; do
   echo "[INFO] Syncing mDNS hostnames..."
@@ -131,12 +151,23 @@ while true; do
       outage_started_epoch=""
     fi
     last_success_epoch="$(date +%s)"
+    last_success_monotonic="$SECONDS"
+    state_dir="${OUTAGE_STATE_FILE%/*}"
+    mkdir -p "$state_dir"
+    temporary_state_file="${OUTAGE_STATE_FILE}.tmp"
+    printf '%s\n' "$last_success_epoch" > "$temporary_state_file"
+    mv -f "$temporary_state_file" "$OUTAGE_STATE_FILE"
   else
     now_epoch="$(date +%s)"
     if [ -z "$outage_started_epoch" ]; then
       outage_started_epoch="$now_epoch"
     fi
-    outage_seconds=$((now_epoch - last_success_epoch))
+    if [ "$last_success_monotonic" -gt 0 ]; then
+      outage_seconds=$((SECONDS - last_success_monotonic))
+    else
+      outage_seconds=$((now_epoch - last_success_epoch))
+      [ "$outage_seconds" -lt 0 ] && outage_seconds=0
+    fi
     log "[WARN] Sync failed; outage=${outage_seconds}s/${MAX_SYNC_OUTAGE_SECONDS}s; retrying"
     if [ "$outage_seconds" -ge "$MAX_SYNC_OUTAGE_SECONDS" ]; then
       log "[ERROR] No successful Pi-hole sync for ${outage_seconds}s; exiting"
