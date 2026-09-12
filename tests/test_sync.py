@@ -15,11 +15,14 @@
 import os
 import tempfile
 import unittest
+from contextlib import redirect_stderr
+from io import StringIO
 from unittest import mock
 
 from avahi import HostRecord
 import requests
 
+import sync
 from sync import PiHoleClient, load_overrides, parse_targets, sync_iteration
 
 
@@ -227,6 +230,37 @@ class PiHoleClientTests(unittest.TestCase):
 
         client.close()
         client.session.close.assert_called_once()
+
+    def test_close_tolerates_os_error(self):
+        client = object.__new__(PiHoleClient)
+        client.api_url = "http://10.0.0.3/api"
+        client.sid = "fake-sid"
+        client.session = mock.Mock()
+        client.session.delete.side_effect = OSError("dbus disconnected")
+
+        client.close()
+        client.session.close.assert_called_once()
+
+
+class MainLoopFailureTests(unittest.TestCase):
+    def test_no_targets_returns_for_next_interval_instead_of_exiting(self):
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PIHOLE_API": "http://10.0.0.2/api,http://10.0.0.3/api",
+                "PIHOLE_TOKEN": "token1,token2",
+                "DNS_OVERRIDES_FILE": "",
+            },
+            clear=False,
+        ), mock.patch.object(sync, "AvahiClient"), mock.patch.object(
+            sync, "PiHoleClient", side_effect=RuntimeError("target unavailable")
+        ), mock.patch.object(sync, "load_overrides", return_value={}):
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                sync.main()
+
+        self.assertIn("Failed to connect to any Pi-hole targets", stderr.getvalue())
+        self.assertIn("retrying next interval", stderr.getvalue())
 
 
 class LoadOverridesTests(unittest.TestCase):

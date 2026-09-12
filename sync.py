@@ -146,7 +146,7 @@ class PiHoleClient:
                     f"[WARN] Pi-hole logout failed: {del_resp.status_code} {del_resp.text.strip()}",
                     file=sys.stderr,
                 )
-        except requests.RequestException as exc:
+        except (requests.RequestException, OSError) as exc:
             print(f"[WARN] Pi-hole logout request failed: {exc}", file=sys.stderr)
         finally:
             self.session.close()
@@ -389,7 +389,11 @@ def main() -> None:
             print("[ERROR] Failed to connect to any Pi-hole targets:", file=sys.stderr)
             for err in errors:
                 print(f"  - {err}", file=sys.stderr)
-            sys.exit(1)
+            print(
+                "[WARN] No Pi-hole targets available; retrying next interval.",
+                file=sys.stderr,
+            )
+            return
 
         if errors:
             print(f"[WARN] Failed to connect to {len(errors)} target(s):", file=sys.stderr)
