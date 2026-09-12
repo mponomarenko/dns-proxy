@@ -25,19 +25,30 @@ import requests
 
 import sync
 from avahi import AvahiClient
-from sync import PiHoleClient, load_overrides, parse_targets, sync_iteration
+from sync import (
+    PiHoleClient,
+    load_overrides,
+    parse_targets,
+    sync_iteration,
+    validate_mdns_view,
+    verify_mdns_records,
+)
 
 
 class FakePiHoleClient:
     def __init__(self, initial_hosts):
         self._initial_hosts = dict(initial_hosts)
         self.updated_hosts = None
+        self.verified_hosts = None
 
     def fetch_hosts(self):
         return dict(self._initial_hosts)
 
     def update_hosts(self, dns_map):
         self.updated_hosts = dict(dns_map)
+
+    def verify_hosts(self, dns_map):
+        self.verified_hosts = dict(dns_map)
 
 
 class MockAvahiClient:
@@ -62,6 +73,13 @@ class MockAvahiClient:
                 )
         return normalized
 
+    def resolve_hostname(self, hostname):
+        base_name = hostname.removesuffix(".local")
+        for record in self.records:
+            if record.base_name == base_name:
+                return record.preferred_ip
+        return ""
+
 
 class SyncIterationTests(unittest.TestCase):
     def test_clean_start_discovers_all_hosts(self):
@@ -82,6 +100,7 @@ class SyncIterationTests(unittest.TestCase):
         expected = {"truenas.home": "10.0.0.10"}
         self.assertEqual(expected, result)
         self.assertEqual(expected, pihole.updated_hosts)
+        self.assertEqual(expected, pihole.verified_hosts)
 
 
     def test_updates_changed_ip(self):
@@ -99,9 +118,10 @@ class SyncIterationTests(unittest.TestCase):
 
         result = sync_iteration(pihole, avahi, "home", keep_local=False)
 
-        expected = {"tower.home": "10.0.115.5"}
+        expected = {"tower.home": ["10.0.115.4", "10.0.115.5"]}
         self.assertEqual(expected, result)
         self.assertEqual(expected, pihole.updated_hosts)
+        self.assertEqual(expected, pihole.verified_hosts)
 
     def test_adds_missing_host_and_retains_existing(self):
         pihole = FakePiHoleClient({"nas.home": "10.0.0.20"})
@@ -178,6 +198,36 @@ class AvahiTimeoutTests(unittest.TestCase):
         self.assertEqual(3, check_output.call_args.kwargs["timeout"])
 
 
+class SelfCheckTests(unittest.TestCase):
+    def test_mdns_self_check_rejects_conflicting_resolution(self):
+        avahi = mock.Mock()
+        avahi.resolve_hostname.return_value = "10.0.0.99"
+        records = [
+            HostRecord(
+                base_name="router",
+                fqdn="router.home",
+                preferred_ip="10.0.0.1",
+                candidates=("10.0.0.1",),
+            )
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "mDNS self-check failed"):
+            verify_mdns_records(avahi, records)
+
+    def test_mdns_baseline_rejects_partial_view(self):
+        records = [
+            HostRecord(
+                base_name="router",
+                fqdn="router.home",
+                preferred_ip="10.0.0.1",
+                candidates=("10.0.0.1",),
+            )
+        ]
+
+        with self.assertRaisesRegex(RuntimeError, "below recent baseline"):
+            validate_mdns_view(records, 1, baseline_hosts=10, baseline_ratio=0.7)
+
+
 class ParseTargetsTests(unittest.TestCase):
     def test_single_target(self):
         result = parse_targets("http://10.0.0.2/api", "token1")
@@ -196,6 +246,28 @@ class ParseTargetsTests(unittest.TestCase):
 
 
 class PiHoleClientTests(unittest.TestCase):
+    def test_dns_self_check_covers_every_name(self):
+        client = object.__new__(PiHoleClient)
+        client.dns_server = "10.0.0.2"
+        expected = {
+            "one.home": "10.0.0.1",
+            "two.home": ["10.0.0.2", "10.0.0.3"],
+            "three.local": "10.0.0.4",
+        }
+
+        def resolved(server, hostname):
+            value = expected[hostname]
+            return {value} if isinstance(value, str) else {value[0]}
+
+        with mock.patch.object(sync, "resolve_dns_a", side_effect=resolved) as resolver:
+            client.verify_hosts(expected)
+
+        self.assertEqual(3, resolver.call_count)
+        self.assertEqual(
+            {"one.home", "two.home", "three.local"},
+            {call.args[1] for call in resolver.call_args_list},
+        )
+
     def test_auth_connection_error_is_wrapped(self):
         client = object.__new__(PiHoleClient)
         client.api_url = "http://10.0.0.3/api"
@@ -366,6 +438,7 @@ class MainLoopFailureTests(unittest.TestCase):
             sync, "sync_iteration", return_value={}
         ) as sync_mock, mock.patch.object(sync, "load_overrides", return_value={}):
             avahi_class.return_value.discover_hosts.return_value = records
+            avahi_class.return_value.resolve_hostname.return_value = "10.0.0.1"
             result = sync.main()
 
         self.assertTrue(result)
@@ -401,6 +474,25 @@ class MainLoopFailureTests(unittest.TestCase):
 
         self.assertEqual(existing, result)
         self.assertEqual(existing, pihole.updated_hosts)
+
+    def test_dns_self_check_failure_marks_sync_failed(self):
+        pihole = FakePiHoleClient({})
+        pihole.verify_hosts = mock.Mock(side_effect=RuntimeError("DNS mismatch"))
+        avahi = MockAvahiClient(
+            [
+                HostRecord(
+                    base_name="router",
+                    fqdn="router.home",
+                    preferred_ip="10.0.0.1",
+                    candidates=("10.0.0.1",),
+                )
+            ]
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "DNS mismatch"):
+            sync_iteration(pihole, avahi, "home", keep_local=False)
+
+        self.assertIsNotNone(pihole.updated_hosts)
 
 
 class LoadOverridesTests(unittest.TestCase):

@@ -15,9 +15,14 @@
 # limitations under the License.
 
 import hashlib
+import json
 import os
+import socket
+import struct
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Iterable, List, Optional, Union
+from urllib.parse import urlsplit
 
 import requests
 
@@ -39,6 +44,9 @@ class PiHoleClient:
 
     def __init__(self, api_url: str, token: str, debug: bool = False):
         self.api_url = api_url
+        self.dns_server = urlsplit(api_url).hostname
+        if not self.dns_server:
+            raise RuntimeError(f"Pi-hole API URL has no hostname: {api_url}")
         self.session = requests.Session()
         self.session.headers.update(
             {"accept": "application/json", "content-type": "application/json"}
@@ -134,6 +142,38 @@ class PiHoleClient:
             raise RuntimeError(
                 f"Failed to update Pi-hole config: {set_resp.status_code} {set_resp.text}"
             )
+
+    def verify_hosts(self, dns_map: Dict[str, Union[str, List[str]]]) -> None:
+        failures = []
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            checks = {
+                executor.submit(resolve_dns_a, self.dns_server, hostname): (
+                    hostname,
+                    {ip} if isinstance(ip, str) else set(ip),
+                )
+                for hostname, ip in dns_map.items()
+            }
+            for future in as_completed(checks):
+                hostname, expected = checks[future]
+                try:
+                    observed = future.result()
+                except (OSError, IndexError, struct.error) as exc:
+                    failures.append(f"{hostname}: DNS query failed: {exc}")
+                    continue
+                if not observed.intersection(expected):
+                    failures.append(
+                        f"{hostname}: expected one of {sorted(expected)}, "
+                        f"resolved {sorted(observed)}"
+                    )
+        if failures:
+            preview = "; ".join(failures[:10])
+            remainder = len(failures) - min(len(failures), 10)
+            if remainder:
+                preview += f"; and {remainder} more"
+            raise RuntimeError(
+                f"Pi-hole DNS self-check failed for {len(failures)} name(s): {preview}"
+            )
+        print(f"[INFO] Pi-hole DNS self-check passed for {len(dns_map)} name(s)")
 
     def close(self) -> None:
         try:
@@ -245,7 +285,79 @@ def sync_iteration(
     )
 
     pihole_client.update_hosts(updated)
+    pihole_client.verify_hosts(updated)
     return updated
+
+
+def encode_dns_name(hostname: str) -> bytes:
+    labels = hostname.rstrip(".").split(".")
+    return b"".join(bytes([len(label)]) + label.encode("idna") for label in labels) + b"\0"
+
+
+def skip_dns_name(packet: bytes, offset: int) -> int:
+    while True:
+        length = packet[offset]
+        if length == 0:
+            return offset + 1
+        if length & 0xC0 == 0xC0:
+            return offset + 2
+        offset += length + 1
+
+
+def resolve_dns_a(server: str, hostname: str, timeout: float = 2.0) -> set:
+    transaction_id = int.from_bytes(os.urandom(2), "big")
+    header = struct.pack("!HHHHHH", transaction_id, 0x0100, 1, 0, 0, 0)
+    packet = header + encode_dns_name(hostname) + struct.pack("!HH", 1, 1)
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(timeout)
+        sock.sendto(packet, (server, 53))
+        response, _ = sock.recvfrom(4096)
+
+    if len(response) < 12:
+        raise OSError("short DNS response")
+    response_id, flags, questions, answers, _, _ = struct.unpack("!HHHHHH", response[:12])
+    if response_id != transaction_id:
+        raise OSError("DNS transaction ID mismatch")
+    if flags & 0x000F:
+        raise OSError(f"DNS response error code {flags & 0x000F}")
+    offset = 12
+    for _ in range(questions):
+        offset = skip_dns_name(response, offset) + 4
+    addresses = set()
+    for _ in range(answers):
+        offset = skip_dns_name(response, offset)
+        record_type, record_class, _, data_length = struct.unpack(
+            "!HHIH", response[offset : offset + 10]
+        )
+        offset += 10
+        data = response[offset : offset + data_length]
+        offset += data_length
+        if record_type == 1 and record_class == 1 and data_length == 4:
+            addresses.add(socket.inet_ntoa(data))
+    return addresses
+
+
+def verify_mdns_records(avahi_client: AvahiClient, records: List[HostRecord]) -> None:
+    failures = []
+    unique_records = {}
+    for record in records:
+        unique_records.setdefault(record.base_name, record)
+    for base_name, record in sorted(unique_records.items()):
+        observed = avahi_client.resolve_hostname(f"{base_name}.local")
+        if not observed or observed not in record.candidates:
+            failures.append(
+                f"{base_name}.local: expected one of {list(record.candidates)}, "
+                f"resolved {observed or '<none>'}"
+            )
+    if failures:
+        preview = "; ".join(failures[:10])
+        remainder = len(failures) - min(len(failures), 10)
+        if remainder:
+            preview += f"; and {remainder} more"
+        raise RuntimeError(
+            f"mDNS self-check failed for {len(failures)} name(s): {preview}"
+        )
+    print(f"[INFO] mDNS self-check passed for {len(unique_records)} name(s)")
 
 
 def _log_mdns_view(records: List[HostRecord]) -> None:
@@ -262,7 +374,12 @@ def _log_mdns_view(records: List[HostRecord]) -> None:
     )
 
 
-def validate_mdns_view(records: List[HostRecord], min_mdns_hosts: int) -> None:
+def validate_mdns_view(
+    records: List[HostRecord],
+    min_mdns_hosts: int,
+    baseline_hosts: int = 0,
+    baseline_ratio: float = 0.7,
+) -> int:
     _log_mdns_view(records)
     discovered_hosts = {record.base_name for record in records}
     if min_mdns_hosts and len(discovered_hosts) < min_mdns_hosts:
@@ -270,6 +387,44 @@ def validate_mdns_view(records: List[HostRecord], min_mdns_hosts: int) -> None:
             f"mDNS view below safety threshold: discovered {len(discovered_hosts)} "
             f"host(s), expected at least {min_mdns_hosts}"
         )
+    required_hosts = max(
+        min_mdns_hosts,
+        int(baseline_hosts * baseline_ratio + 0.9999),
+    )
+    if baseline_hosts and len(discovered_hosts) < required_hosts:
+        raise RuntimeError(
+            f"mDNS view below recent baseline: discovered {len(discovered_hosts)} "
+            f"host(s), baseline is {baseline_hosts} and minimum ratio is "
+            f"{baseline_ratio:.0%}"
+        )
+    return len(discovered_hosts)
+
+
+def load_mdns_baseline(path: str) -> int:
+    if not path:
+        return 0
+    try:
+        with open(path, encoding="utf-8") as handle:
+            state = json.load(handle)
+        return max(0, int(state.get("host_count", 0)))
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def save_mdns_baseline(path: str, host_count: int) -> None:
+    if not path:
+        return
+    temporary_path = f"{path}.tmp"
+    try:
+        with open(temporary_path, "w", encoding="utf-8") as handle:
+            json.dump({"host_count": host_count}, handle)
+        os.replace(temporary_path, path)
+    except OSError as exc:
+        print(f"[WARN] Could not save mDNS baseline: {exc}", file=sys.stderr)
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
 
 
 def apply_avahi_records(
@@ -301,7 +456,16 @@ def apply_avahi_records(
         if existing_ip == preferred_ip:
             _debug_log(debug, f"No change for {host}; remains {existing_ip}")
             continue
-        updated[host] = preferred_ip
+        if existing_ip is not None:
+            previous_ips = existing_ip if isinstance(existing_ip, list) else [existing_ip]
+            if preferred_ip not in previous_ips:
+                print(
+                    f"[WARN] Preserving existing address(es) for {host}: "
+                    f"{previous_ips}; adding observed {preferred_ip}"
+                )
+                updated[host] = [*previous_ips, preferred_ip]
+        else:
+            updated[host] = preferred_ip
 
     # Create subdomain variants: .any (all IPs), .v4 (IPv4 only), .v6 (IPv6 only)
     seen_bases = set()
@@ -371,6 +535,9 @@ def main() -> bool:
     overrides_file = os.getenv("DNS_OVERRIDES_FILE", "/config/overrides")
     static_hosts_env = os.getenv("DNS_STATIC_HOSTS", "")
     min_mdns_hosts = int(os.getenv("MIN_MDNS_HOSTS", "1"))
+    mdns_baseline_file = os.getenv("MDNS_BASELINE_FILE", "/config/mdns-baseline.json")
+    mdns_baseline_ratio = float(os.getenv("MDNS_BASELINE_RATIO", "0.7"))
+    baseline_hosts = load_mdns_baseline(mdns_baseline_file)
 
     if not pihole_token:
         print("[ERROR] Missing API token (PIHOLE_TOKEN)", file=sys.stderr)
@@ -432,7 +599,13 @@ def main() -> bool:
 
         try:
             records = avahi_client.discover_hosts(domain_suffix, keep_local=keep_local)
-            validate_mdns_view(records, min_mdns_hosts)
+            discovered_host_count = validate_mdns_view(
+                records,
+                min_mdns_hosts,
+                baseline_hosts=baseline_hosts,
+                baseline_ratio=mdns_baseline_ratio,
+            )
+            verify_mdns_records(avahi_client, records)
         except RuntimeError as exc:
             print(f"[ERROR] mDNS discovery failed: {exc}", file=sys.stderr)
             return False
@@ -464,6 +637,7 @@ def main() -> bool:
             client.close()
 
     if successful_syncs:
+        save_mdns_baseline(mdns_baseline_file, discovered_host_count)
         print(f"[INFO] Sync complete ({successful_syncs}/{len(pihole_clients)} target(s)).")
         return True
     print("[WARN] No Pi-hole target completed a sync; retrying next interval.", file=sys.stderr)
