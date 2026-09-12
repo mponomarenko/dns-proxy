@@ -30,6 +30,7 @@ from sync import (
     load_overrides,
     parse_targets,
     sync_iteration,
+    update_target_health,
     validate_mdns_view,
     verify_mdns_records,
 )
@@ -246,6 +247,18 @@ class ParseTargetsTests(unittest.TestCase):
 
 
 class PiHoleClientTests(unittest.TestCase):
+    def test_target_health_tracks_individual_failures_and_recovery(self):
+        state = {}
+        update_target_health(state, "http://10.0.0.2/api", False, "unavailable")
+        update_target_health(state, "http://10.0.0.2/api", False, "still unavailable")
+        self.assertEqual("degraded", state["http://10.0.0.2/api"]["status"])
+        self.assertEqual(2, state["http://10.0.0.2/api"]["consecutive_failures"])
+        self.assertEqual("still unavailable", state["http://10.0.0.2/api"]["last_error"])
+
+        update_target_health(state, "http://10.0.0.2/api", True)
+        self.assertEqual("healthy", state["http://10.0.0.2/api"]["status"])
+        self.assertEqual(0, state["http://10.0.0.2/api"]["consecutive_failures"])
+
     def test_dns_self_check_covers_every_name(self):
         client = object.__new__(PiHoleClient)
         client.dns_server = "10.0.0.2"

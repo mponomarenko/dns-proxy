@@ -20,6 +20,7 @@ import os
 import socket
 import struct
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Iterable, List, Optional, Union
 from urllib.parse import urlsplit
@@ -441,6 +442,51 @@ def save_mdns_baseline(path: str, host_count: int) -> None:
             pass
 
 
+def load_target_health(path: str) -> Dict[str, dict]:
+    if not path:
+        return {}
+    try:
+        with open(path, encoding="utf-8") as handle:
+            state = json.load(handle)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def save_target_health(path: str, state: Dict[str, dict]) -> None:
+    if not path:
+        return
+    temporary_path = f"{path}.tmp"
+    try:
+        with open(temporary_path, "w", encoding="utf-8") as handle:
+            json.dump(state, handle, sort_keys=True)
+        os.replace(temporary_path, path)
+    except OSError as exc:
+        print(f"[WARN] Could not save Pi-hole target health: {exc}", file=sys.stderr)
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
+
+
+def update_target_health(
+    state: Dict[str, dict], api_url: str, success: bool, error: str = ""
+) -> None:
+    now = int(time.time())
+    entry = state.setdefault(api_url, {})
+    entry["last_attempt_epoch"] = now
+    if success:
+        entry["status"] = "healthy"
+        entry["last_success_epoch"] = now
+        entry["consecutive_failures"] = 0
+        return
+    entry["status"] = "degraded"
+    entry["last_failure_epoch"] = now
+    entry["consecutive_failures"] = int(entry.get("consecutive_failures", 0)) + 1
+    if error:
+        entry["last_error"] = error
+
+
 def apply_avahi_records(
     dns_map: Dict[str, Union[str, List[str]]],
     records: Iterable[HostRecord],
@@ -552,6 +598,10 @@ def main() -> bool:
     mdns_baseline_file = os.getenv("MDNS_BASELINE_FILE", "/config/mdns-baseline.json")
     mdns_baseline_ratio = float(os.getenv("MDNS_BASELINE_RATIO", "0.7"))
     baseline_hosts = load_mdns_baseline(mdns_baseline_file)
+    target_health_file = os.getenv(
+        "PIHOLE_TARGET_HEALTH_FILE", "/config/pihole-target-health.json"
+    )
+    target_health = load_target_health(target_health_file)
 
     if not pihole_token:
         print("[ERROR] Missing API token (PIHOLE_TOKEN)", file=sys.stderr)
@@ -581,6 +631,7 @@ def main() -> bool:
     if overrides:
         print(f"[INFO] Loaded {len(overrides)} DNS overrides: {list(overrides.keys())}")
     pihole_clients: List[PiHoleClient] = []
+    pihole_target_urls: List[str] = []
     errors = []
 
     multi = len(targets) > 1
@@ -592,14 +643,17 @@ def main() -> bool:
             try:
                 client = PiHoleClient(api_url, token, debug=debug_enabled)
                 pihole_clients.append(client)
+                pihole_target_urls.append(api_url)
                 _debug_log(debug_enabled, f"{target_name(i)}: connected to {api_url}")
             except RuntimeError as exc:
+                update_target_health(target_health, api_url, False, str(exc))
                 errors.append(f"{target_name(i)} ({api_url}): {exc}")
 
         if not pihole_clients:
             print("[ERROR] Failed to connect to any Pi-hole targets:", file=sys.stderr)
             for err in errors:
                 print(f"  - {err}", file=sys.stderr)
+            save_target_health(target_health_file, target_health)
             print(
                 "[WARN] No Pi-hole targets available; retrying next interval.",
                 file=sys.stderr,
@@ -629,7 +683,7 @@ def main() -> bool:
         # does not count as a successful cycle; the caller uses this result to
         # enforce a bounded outage budget instead of hiding a permanent outage.
         successful_syncs = 0
-        for i, client in enumerate(pihole_clients, 1):
+        for i, (client, api_url) in enumerate(zip(pihole_clients, pihole_target_urls), 1):
             try:
                 sync_iteration(
                     client,
@@ -642,13 +696,16 @@ def main() -> bool:
                     records=records,
                 )
                 _debug_log(debug_enabled, f"{target_name(i)}: sync complete")
+                update_target_health(target_health, api_url, True)
                 successful_syncs += 1
             except RuntimeError as exc:
+                update_target_health(target_health, api_url, False, str(exc))
                 print(f"[ERROR] {target_name(i)}: {exc}", file=sys.stderr)
 
     finally:
         for client in pihole_clients:
             client.close()
+        save_target_health(target_health_file, target_health)
 
     if successful_syncs:
         save_mdns_baseline(mdns_baseline_file, discovered_host_count)
