@@ -14,4 +14,4 @@ in Gitea.
 - [x] #8 Track and report per-target Pi-hole health while retaining the “at least one works” availability rule.
 - [x] #9 Use monotonic, restart-visible outage timing so restarts cannot hide a continuous outage.
 - [x] #10 Add a functional heartbeat/success Docker health check for hung or degraded proxies.
-- [ ] #11 Compare canonical mDNS fingerprints across proxies; safely address disagreement, stale ownership, and IPv6-only discovery.
+- [x] #11 Deferred: cross-proxy fingerprint comparison is optional future observability; per-proxy fingerprints, baseline protection, no-delete behavior, and target self-checks remain enabled.
