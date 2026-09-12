@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -23,6 +24,7 @@ from avahi import HostRecord
 import requests
 
 import sync
+from avahi import AvahiClient
 from sync import PiHoleClient, load_overrides, parse_targets, sync_iteration
 
 
@@ -80,6 +82,7 @@ class SyncIterationTests(unittest.TestCase):
         expected = {"truenas.home": "10.0.0.10"}
         self.assertEqual(expected, result)
         self.assertEqual(expected, pihole.updated_hosts)
+
 
     def test_updates_changed_ip(self):
         pihole = FakePiHoleClient({"tower.home": "10.0.115.4"})
@@ -149,6 +152,30 @@ class SyncIterationTests(unittest.TestCase):
         }
         self.assertEqual(expected, result)
         self.assertEqual(expected, pihole.updated_hosts)
+
+
+class AvahiTimeoutTests(unittest.TestCase):
+    def test_browse_timeout_returns_empty_result(self):
+        client = AvahiClient(command_timeout=2)
+        with mock.patch(
+            "avahi.subprocess.check_output",
+            side_effect=subprocess.TimeoutExpired("avahi-browse", 2),
+        ) as check_output:
+            self.assertEqual("", client._run_browse())
+
+        check_output.assert_called_once()
+        self.assertEqual(2, check_output.call_args.kwargs["timeout"])
+
+    def test_resolve_timeout_returns_empty_result(self):
+        client = AvahiClient(command_timeout=3)
+        with mock.patch(
+            "avahi.subprocess.check_output",
+            side_effect=subprocess.TimeoutExpired("avahi-resolve-host-name", 3),
+        ) as check_output:
+            self.assertEqual("", client._resolve_ipv4("dev"))
+
+        check_output.assert_called_once()
+        self.assertEqual(3, check_output.call_args.kwargs["timeout"])
 
 
 class ParseTargetsTests(unittest.TestCase):

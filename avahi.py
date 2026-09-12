@@ -28,15 +28,19 @@ class HostRecord:
 
 
 class AvahiClient:
+    DEFAULT_COMMAND_TIMEOUT_SECONDS = 10
+
     def __init__(
         self,
         browse_cmd=None,
         resolve_cmd=None,
         debug: bool = False,
+        command_timeout: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     ):
         self._browse_cmd = browse_cmd or ["avahi-browse", "-alrpt", "--parsable"]
         self._resolve_cmd = resolve_cmd or ["avahi-resolve-host-name", "-4"]
         self._debug = debug
+        self._command_timeout = command_timeout
 
     def discover_hosts(self, domain_suffix: str, keep_local: bool = False) -> List[HostRecord]:
         raw = self._run_browse()
@@ -84,8 +88,14 @@ class AvahiClient:
                 stderr=subprocess.DEVNULL,
                 text=True,
                 errors="replace",
+                timeout=self._command_timeout,
             )
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            if isinstance(exc, subprocess.TimeoutExpired):
+                print(
+                    f"[ERROR] avahi-browse timed out after {self._command_timeout}s",
+                    file=sys.stderr,
+                )
             return ""
 
     @staticmethod
@@ -139,8 +149,14 @@ class AvahiClient:
                 stderr=subprocess.DEVNULL,
                 text=True,
                 errors="replace",
+                timeout=self._command_timeout,
             )
-        except subprocess.CalledProcessError:
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError) as exc:
+            if isinstance(exc, subprocess.TimeoutExpired):
+                print(
+                    f"[ERROR] avahi-resolve-host-name timed out after {self._command_timeout}s",
+                    file=sys.stderr,
+                )
             self._log_debug(f"Resolution failed for {mdns_name}")
             return ""
         for line in result.splitlines():
