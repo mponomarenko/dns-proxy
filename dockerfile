@@ -41,4 +41,7 @@ COPY avahi.py /usr/local/bin/avahi.py
 COPY run.sh /usr/local/bin/run.sh
 RUN chmod +x /usr/local/bin/run.sh
 
+COPY healthcheck.sh /usr/local/bin/healthcheck.sh
+RUN chmod +x /usr/local/bin/healthcheck.sh
+
 ENTRYPOINT ["/usr/local/bin/run.sh"]

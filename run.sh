@@ -25,6 +25,8 @@
 # MDNS_BASELINE_RATIO: minimum fraction of baseline hosts accepted (default: 0.7)
 # PIHOLE_TARGET_HEALTH_FILE: persistent per-target health state (default: /config/state/pihole-target-health.json)
 # OUTAGE_STATE_FILE: persistent last-success state (default: /config/state/outage-state)
+# HEARTBEAT_FILE: persistent loop heartbeat (default: /config/state/heartbeat)
+# HEALTH_MAX_SYNC_AGE_SECONDS: healthcheck freshness window (default: 900)
 # AVAHI_DISABLE_AUTOSTART: set to 1 to disable auto-start of avahi-daemon and dbus-daemon
 # DNS_OVERRIDES_FILE: path to hosts-format overrides file (default: /config/overrides)
 #                     format: "IP hostname" per line, like /etc/hosts
@@ -47,6 +49,7 @@ INTERVAL="${INTERVAL:-300}"
 MAX_SYNC_OUTAGE_SECONDS="${MAX_SYNC_OUTAGE_SECONDS:-3600}"
 MIN_MDNS_HOSTS="${MIN_MDNS_HOSTS:-1}"
 OUTAGE_STATE_FILE="${OUTAGE_STATE_FILE:-/config/state/outage-state}"
+HEARTBEAT_FILE="${HEARTBEAT_FILE:-/config/state/heartbeat}"
 
 echo "[STARTUP] Avahi to Pi-hole sync container started"
 echo "[CONFIG] PIHOLE_API=$PIHOLE_API"
@@ -55,6 +58,7 @@ echo "[CONFIG] INTERVAL=${INTERVAL}s"
 echo "[CONFIG] MAX_SYNC_OUTAGE_SECONDS=${MAX_SYNC_OUTAGE_SECONDS}s"
 echo "[CONFIG] MIN_MDNS_HOSTS=${MIN_MDNS_HOSTS}"
 echo "[CONFIG] OUTAGE_STATE_FILE=${OUTAGE_STATE_FILE}"
+echo "[CONFIG] HEARTBEAT_FILE=${HEARTBEAT_FILE}"
 
 log(){ printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 
@@ -143,6 +147,10 @@ last_success_monotonic="$SECONDS"
 outage_started_epoch=""
 while true; do
   echo "[INFO] Syncing mDNS hostnames..."
+  heartbeat_dir="${HEARTBEAT_FILE%/*}"
+  mkdir -p "$heartbeat_dir"
+  printf '%s\n' "$(date +%s)" > "${HEARTBEAT_FILE}.tmp"
+  mv -f "${HEARTBEAT_FILE}.tmp" "$HEARTBEAT_FILE"
 
   if /usr/local/bin/sync.py; then
     if [ -n "$outage_started_epoch" ]; then

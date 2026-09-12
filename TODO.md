@@ -13,5 +13,5 @@ in Gitea.
 - [ ] #7 Read back and verify Pi-hole updates before counting a target as successful.
 - [x] #8 Track and report per-target Pi-hole health while retaining the “at least one works” availability rule.
 - [x] #9 Use monotonic, restart-visible outage timing so restarts cannot hide a continuous outage.
-- [ ] #10 Add a functional heartbeat/success Docker health check for hung or degraded proxies.
+- [x] #10 Add a functional heartbeat/success Docker health check for hung or degraded proxies.
 - [ ] #11 Compare canonical mDNS fingerprints across proxies; safely address disagreement, stale ownership, and IPv6-only discovery.
