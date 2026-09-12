@@ -223,25 +223,13 @@ def sync_iteration(
     overrides: Dict[str, Union[str, List[str]]] = None,
     debug: bool = False,
     min_mdns_hosts: int = 1,
+    records: Optional[List[HostRecord]] = None,
 ) -> Dict[str, Union[str, List[str]]]:
     dns_map = pihole_client.fetch_hosts()
 
-    records = avahi_client.discover_hosts(domain_suffix, keep_local=keep_local)
-    discovered_hosts = sorted({record.base_name for record in records})
-    view = "\n".join(
-        f"{record.fqdn}|{record.preferred_ip}|{','.join(record.candidates)}|{','.join(record.all_ips)}"
-        for record in sorted(records, key=lambda item: item.fqdn)
-    )
-    fingerprint = hashlib.sha256(view.encode("utf-8")).hexdigest()[:12]
-    print(
-        f"[INFO] mDNS view: hosts={len(discovered_hosts)} records={len(records)} "
-        f"fingerprint={fingerprint}"
-    )
-    if min_mdns_hosts and len(discovered_hosts) < min_mdns_hosts:
-        raise RuntimeError(
-            f"mDNS view below safety threshold: discovered {len(discovered_hosts)} "
-            f"host(s), expected at least {min_mdns_hosts}"
-        )
+    if records is None:
+        records = avahi_client.discover_hosts(domain_suffix, keep_local=keep_local)
+        validate_mdns_view(records, min_mdns_hosts)
     avahi_debug = {record.fqdn: list(record.candidates) for record in records}
     _debug_log(debug, f"Avahi hosts discovered: {avahi_debug}")
 
@@ -258,6 +246,30 @@ def sync_iteration(
 
     pihole_client.update_hosts(updated)
     return updated
+
+
+def _log_mdns_view(records: List[HostRecord]) -> None:
+    discovered_hosts = {record.base_name for record in records}
+    view = "\n".join(
+        f"{record.fqdn}|{record.preferred_ip}|{','.join(sorted(set(record.candidates)))}|"
+        f"{','.join(sorted(set(record.all_ips)))}"
+        for record in sorted(records, key=lambda item: item.fqdn)
+    )
+    fingerprint = hashlib.sha256(view.encode("utf-8")).hexdigest()[:12]
+    print(
+        f"[INFO] mDNS view: hosts={len(discovered_hosts)} records={len(records)} "
+        f"fingerprint={fingerprint}"
+    )
+
+
+def validate_mdns_view(records: List[HostRecord], min_mdns_hosts: int) -> None:
+    _log_mdns_view(records)
+    discovered_hosts = {record.base_name for record in records}
+    if min_mdns_hosts and len(discovered_hosts) < min_mdns_hosts:
+        raise RuntimeError(
+            f"mDNS view below safety threshold: discovered {len(discovered_hosts)} "
+            f"host(s), expected at least {min_mdns_hosts}"
+        )
 
 
 def apply_avahi_records(
@@ -418,7 +430,15 @@ def main() -> bool:
             for err in errors:
                 print(f"  - {err}", file=sys.stderr)
 
-        # Sync to all connected targets. A connected target whose sync fails
+        try:
+            records = avahi_client.discover_hosts(domain_suffix, keep_local=keep_local)
+            validate_mdns_view(records, min_mdns_hosts)
+        except RuntimeError as exc:
+            print(f"[ERROR] mDNS discovery failed: {exc}", file=sys.stderr)
+            return False
+
+        # Sync the same validated mDNS snapshot to all connected targets. A
+        # connected target whose sync fails
         # does not count as a successful cycle; the caller uses this result to
         # enforce a bounded outage budget instead of hiding a permanent outage.
         successful_syncs = 0
@@ -432,6 +452,7 @@ def main() -> bool:
                     overrides=overrides,
                     debug=debug_enabled,
                     min_mdns_hosts=min_mdns_hosts,
+                    records=records,
                 )
                 _debug_log(debug_enabled, f"{target_name(i)}: sync complete")
                 successful_syncs += 1

@@ -277,6 +277,7 @@ class MainLoopFailureTests(unittest.TestCase):
                 "PIHOLE_API": "http://10.0.0.2/api,http://10.0.0.3/api",
                 "PIHOLE_TOKEN": "token1,token2",
                 "DNS_OVERRIDES_FILE": "",
+                "MIN_MDNS_HOSTS": "0",
             },
             clear=False,
         ), mock.patch.object(sync, "AvahiClient"), mock.patch.object(
@@ -301,6 +302,7 @@ class MainLoopFailureTests(unittest.TestCase):
                 "PIHOLE_API": "http://10.0.0.2/api,http://10.0.0.3/api",
                 "PIHOLE_TOKEN": "token1,token2",
                 "DNS_OVERRIDES_FILE": "",
+                "MIN_MDNS_HOSTS": "0",
             },
             clear=False,
         ), mock.patch.object(sync, "AvahiClient"), mock.patch.object(
@@ -323,6 +325,7 @@ class MainLoopFailureTests(unittest.TestCase):
                 "PIHOLE_API": "http://10.0.0.2/api,http://10.0.0.3/api",
                 "PIHOLE_TOKEN": "token1,token2",
                 "DNS_OVERRIDES_FILE": "",
+                "MIN_MDNS_HOSTS": "0",
             },
             clear=False,
         ), mock.patch.object(sync, "AvahiClient"), mock.patch.object(
@@ -335,6 +338,43 @@ class MainLoopFailureTests(unittest.TestCase):
             result = sync.main()
 
         self.assertTrue(result)
+
+    def test_main_discovers_one_snapshot_for_all_targets(self):
+        class FakeClient:
+            def close(self):
+                pass
+
+        records = [
+            HostRecord(
+                base_name="router",
+                fqdn="router.home",
+                preferred_ip="10.0.0.1",
+                candidates=("10.0.0.1",),
+            )
+        ]
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PIHOLE_API": "http://10.0.0.2/api,http://10.0.0.3/api",
+                "PIHOLE_TOKEN": "token1,token2",
+                "DNS_OVERRIDES_FILE": "",
+            },
+            clear=False,
+        ), mock.patch.object(sync, "AvahiClient") as avahi_class, mock.patch.object(
+            sync, "PiHoleClient", side_effect=[FakeClient(), FakeClient()]
+        ), mock.patch.object(
+            sync, "sync_iteration", return_value={}
+        ) as sync_mock, mock.patch.object(sync, "load_overrides", return_value={}):
+            avahi_class.return_value.discover_hosts.return_value = records
+            result = sync.main()
+
+        self.assertTrue(result)
+        avahi_class.return_value.discover_hosts.assert_called_once_with(
+            "home", keep_local=False
+        )
+        self.assertEqual(2, sync_mock.call_count)
+        self.assertIs(sync_mock.call_args_list[0].kwargs["records"], records)
+        self.assertIs(sync_mock.call_args_list[1].kwargs["records"], records)
 
     def test_empty_mdns_view_is_not_a_successful_sync(self):
         pihole = FakePiHoleClient({"old.home": "10.0.0.10"})
