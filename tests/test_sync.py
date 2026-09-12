@@ -259,7 +259,7 @@ class PiHoleClientTests(unittest.TestCase):
             value = expected[hostname]
             return {value} if isinstance(value, str) else {value[0]}
 
-        with mock.patch.object(sync, "resolve_dns_a", side_effect=resolved) as resolver:
+        with mock.patch.object(sync, "resolve_dns_addresses", side_effect=resolved) as resolver:
             client.verify_hosts(expected)
 
         self.assertEqual(3, resolver.call_count)

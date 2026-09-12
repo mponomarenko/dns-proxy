@@ -147,7 +147,7 @@ class PiHoleClient:
         failures = []
         with ThreadPoolExecutor(max_workers=16) as executor:
             checks = {
-                executor.submit(resolve_dns_a, self.dns_server, hostname): (
+                    executor.submit(resolve_dns_addresses, self.dns_server, hostname): (
                     hostname,
                     {ip} if isinstance(ip, str) else set(ip),
                 )
@@ -304,10 +304,22 @@ def skip_dns_name(packet: bytes, offset: int) -> int:
         offset += length + 1
 
 
-def resolve_dns_a(server: str, hostname: str, timeout: float = 2.0) -> set:
+def resolve_dns_addresses(server: str, hostname: str, timeout: float = 2.0) -> set:
+    addresses = set()
+    for query_type in (1, 28):
+        addresses.update(resolve_dns(server, hostname, query_type, timeout))
+    return addresses
+
+
+def resolve_dns(
+    server: str,
+    hostname: str,
+    query_type: int,
+    timeout: float = 2.0,
+) -> set:
     transaction_id = int.from_bytes(os.urandom(2), "big")
     header = struct.pack("!HHHHHH", transaction_id, 0x0100, 1, 0, 0, 0)
-    packet = header + encode_dns_name(hostname) + struct.pack("!HH", 1, 1)
+    packet = header + encode_dns_name(hostname) + struct.pack("!HH", query_type, 1)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.settimeout(timeout)
         sock.sendto(packet, (server, 53))
@@ -334,6 +346,8 @@ def resolve_dns_a(server: str, hostname: str, timeout: float = 2.0) -> set:
         offset += data_length
         if record_type == 1 and record_class == 1 and data_length == 4:
             addresses.add(socket.inet_ntoa(data))
+        elif record_type == 28 and record_class == 1 and data_length == 16:
+            addresses.add(socket.inet_ntop(socket.AF_INET6, data))
     return addresses
 
 
