@@ -383,9 +383,10 @@ def _log_mdns_view(records: List[HostRecord]) -> None:
         for record in sorted(records, key=lambda item: item.fqdn)
     )
     fingerprint = hashlib.sha256(view.encode("utf-8")).hexdigest()[:12]
+    proxy_id = os.getenv("PROXY_ID", socket.gethostname())
     print(
-        f"[INFO] mDNS view: hosts={len(discovered_hosts)} records={len(records)} "
-        f"fingerprint={fingerprint}"
+        f"[INFO] mDNS view: proxy={proxy_id} epoch={int(time.time())} "
+        f"hosts={len(discovered_hosts)} records={len(records)} fingerprint={fingerprint}"
     )
 
 

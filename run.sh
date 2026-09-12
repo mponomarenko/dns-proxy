@@ -27,6 +27,7 @@
 # OUTAGE_STATE_FILE: persistent last-success state (default: /config/state/outage-state)
 # HEARTBEAT_FILE: persistent loop heartbeat (default: /config/state/heartbeat)
 # HEALTH_MAX_SYNC_AGE_SECONDS: healthcheck freshness window (default: 900)
+# PROXY_ID: stable proxy identity included in mDNS view logs (default: hostname)
 # AVAHI_DISABLE_AUTOSTART: set to 1 to disable auto-start of avahi-daemon and dbus-daemon
 # DNS_OVERRIDES_FILE: path to hosts-format overrides file (default: /config/overrides)
 #                     format: "IP hostname" per line, like /etc/hosts
