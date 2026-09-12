@@ -75,7 +75,7 @@ class PiHoleClient:
     def headers(self) -> Dict[str, str]:
         return {"accept": "application/json", "sid": self.sid}
 
-    def fetch_hosts(self) -> Dict[str, str]:
+    def fetch_hosts(self) -> Dict[str, Union[str, List[str]]]:
         try:
             resp = self.session.get(
                 f"{self.api_url}/config/dns%2Fhosts",
@@ -86,12 +86,19 @@ class PiHoleClient:
         except requests.RequestException as exc:
             raise RuntimeError(f"Pi-hole fetch failed: {exc}") from exc
         cfg = resp.json()
-        dns_map: Dict[str, str] = {}
+        dns_map: Dict[str, Union[str, List[str]]] = {}
         for entry in cfg.get("config", {}).get("dns", {}).get("hosts", []):
             parts = entry.split()
             if len(parts) >= 2:
                 ip, host = parts[0], parts[1]
-                dns_map[host] = ip
+                existing = dns_map.get(host)
+                if existing is None:
+                    dns_map[host] = ip
+                elif isinstance(existing, list):
+                    if ip not in existing:
+                        existing.append(ip)
+                elif existing != ip:
+                    dns_map[host] = [existing, ip]
             else:
                 print(f"[WARN] Unexpected hosts entry: {entry}", file=sys.stderr)
         if self.debug:
@@ -145,7 +152,7 @@ class PiHoleClient:
             self.session.close()
 
 
-def load_overrides(file_path: str, avahi_client: Optional["AvahiClient"] = None) -> Dict[str, str]:
+def load_overrides(file_path: str, avahi_client: Optional["AvahiClient"] = None) -> Dict[str, Union[str, List[str]]]:
     """Load DNS overrides from hosts-format file: 'IP-or-.local hostname [alias...]'
 
     The first field may be a static IP or a .local hostname to resolve via Avahi.
@@ -176,7 +183,14 @@ def load_overrides(file_path: str, avahi_client: Optional["AvahiClient"] = None)
                 else:
                     ip = ip_or_host
                 for hostname in parts[1:]:
-                    result[hostname] = ip
+                    existing = result.get(hostname)
+                    if existing is None:
+                        result[hostname] = ip
+                    elif isinstance(existing, list):
+                        if ip not in existing:
+                            existing.append(ip)
+                    elif existing != ip:
+                        result[hostname] = [existing, ip]
     return result
 
 
@@ -205,9 +219,9 @@ def sync_iteration(
     avahi_client: "AvahiClient",
     domain_suffix: str,
     keep_local: bool,
-    overrides: Dict[str, str] = None,
+    overrides: Dict[str, Union[str, List[str]]] = None,
     debug: bool = False,
-) -> Dict[str, str]:
+) -> Dict[str, Union[str, List[str]]]:
     dns_map = pihole_client.fetch_hosts()
 
     records = avahi_client.discover_hosts(domain_suffix, keep_local=keep_local)
@@ -230,11 +244,11 @@ def sync_iteration(
 
 
 def apply_avahi_records(
-    dns_map: Dict[str, str],
+    dns_map: Dict[str, Union[str, List[str]]],
     records: Iterable[HostRecord],
-    overrides: Dict[str, str] = None,
+    overrides: Dict[str, Union[str, List[str]]] = None,
     debug: bool = False,
-) -> Dict[str, str]:
+) -> Dict[str, Union[str, List[str]]]:
     updated = dict(dns_map)
     overrides = overrides or {}
     for record in records:

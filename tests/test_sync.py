@@ -236,6 +236,18 @@ class LoadOverridesTests(unittest.TestCase):
         f.close()
         return f.name
 
+    def test_repeated_override_hostname_preserves_all_addresses(self):
+        path = self._write_overrides(
+            "10.0.0.50 home-api.home\n10.0.0.40 home-api.home\n"
+        )
+        try:
+            self.assertEqual(
+                {"home-api.home": ["10.0.0.50", "10.0.0.40"]},
+                load_overrides(path),
+            )
+        finally:
+            os.unlink(path)
+
     def test_static_ip(self):
         path = self._write_overrides("10.0.0.10 rescue.home\n")
         try:
