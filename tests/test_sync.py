@@ -257,10 +257,83 @@ class MainLoopFailureTests(unittest.TestCase):
         ), mock.patch.object(sync, "load_overrides", return_value={}):
             stderr = StringIO()
             with redirect_stderr(stderr):
-                sync.main()
+                result = sync.main()
 
+        self.assertFalse(result)
         self.assertIn("Failed to connect to any Pi-hole targets", stderr.getvalue())
         self.assertIn("retrying next interval", stderr.getvalue())
+
+    def test_all_connected_targets_failing_returns_false(self):
+        class FakeClient:
+            def close(self):
+                pass
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PIHOLE_API": "http://10.0.0.2/api,http://10.0.0.3/api",
+                "PIHOLE_TOKEN": "token1,token2",
+                "DNS_OVERRIDES_FILE": "",
+            },
+            clear=False,
+        ), mock.patch.object(sync, "AvahiClient"), mock.patch.object(
+            sync, "PiHoleClient", side_effect=[FakeClient(), FakeClient()]
+        ), mock.patch.object(
+            sync, "sync_iteration", side_effect=RuntimeError("sync failed")
+        ), mock.patch.object(sync, "load_overrides", return_value={}):
+            result = sync.main()
+
+        self.assertFalse(result)
+
+    def test_one_successful_target_makes_cycle_successful(self):
+        class FakeClient:
+            def close(self):
+                pass
+
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PIHOLE_API": "http://10.0.0.2/api,http://10.0.0.3/api",
+                "PIHOLE_TOKEN": "token1,token2",
+                "DNS_OVERRIDES_FILE": "",
+            },
+            clear=False,
+        ), mock.patch.object(sync, "AvahiClient"), mock.patch.object(
+            sync, "PiHoleClient", side_effect=[FakeClient(), FakeClient()]
+        ), mock.patch.object(
+            sync,
+            "sync_iteration",
+            side_effect=[None, RuntimeError("sync failed")],
+        ), mock.patch.object(sync, "load_overrides", return_value={}):
+            result = sync.main()
+
+        self.assertTrue(result)
+
+    def test_empty_mdns_view_is_not_a_successful_sync(self):
+        pihole = FakePiHoleClient({"old.home": "10.0.0.10"})
+        avahi = MockAvahiClient([])
+
+        with self.assertRaises(RuntimeError) as ctx:
+            sync_iteration(pihole, avahi, "home", keep_local=False)
+
+        self.assertIn("mDNS view below safety threshold", str(ctx.exception))
+        self.assertIsNone(pihole.updated_hosts)
+
+    def test_empty_mdns_view_never_deletes_existing_records(self):
+        existing = {"old.home": "10.0.0.10"}
+        pihole = FakePiHoleClient(existing)
+        avahi = MockAvahiClient([])
+
+        result = sync_iteration(
+            pihole,
+            avahi,
+            "home",
+            keep_local=False,
+            min_mdns_hosts=0,
+        )
+
+        self.assertEqual(existing, result)
+        self.assertEqual(existing, pihole.updated_hosts)
 
 
 class LoadOverridesTests(unittest.TestCase):

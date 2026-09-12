@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import os
 import sys
 from typing import Dict, Iterable, List, Optional, Union
@@ -221,10 +222,26 @@ def sync_iteration(
     keep_local: bool,
     overrides: Dict[str, Union[str, List[str]]] = None,
     debug: bool = False,
+    min_mdns_hosts: int = 1,
 ) -> Dict[str, Union[str, List[str]]]:
     dns_map = pihole_client.fetch_hosts()
 
     records = avahi_client.discover_hosts(domain_suffix, keep_local=keep_local)
+    discovered_hosts = sorted({record.base_name for record in records})
+    view = "\n".join(
+        f"{record.fqdn}|{record.preferred_ip}|{','.join(record.candidates)}|{','.join(record.all_ips)}"
+        for record in sorted(records, key=lambda item: item.fqdn)
+    )
+    fingerprint = hashlib.sha256(view.encode("utf-8")).hexdigest()[:12]
+    print(
+        f"[INFO] mDNS view: hosts={len(discovered_hosts)} records={len(records)} "
+        f"fingerprint={fingerprint}"
+    )
+    if min_mdns_hosts and len(discovered_hosts) < min_mdns_hosts:
+        raise RuntimeError(
+            f"mDNS view below safety threshold: discovered {len(discovered_hosts)} "
+            f"host(s), expected at least {min_mdns_hosts}"
+        )
     avahi_debug = {record.fqdn: list(record.candidates) for record in records}
     _debug_log(debug, f"Avahi hosts discovered: {avahi_debug}")
 
@@ -333,7 +350,7 @@ def parse_targets(api_env: str, token_env: str) -> List[tuple]:
     return list(zip(apis, tokens))
 
 
-def main() -> None:
+def main() -> bool:
     pihole_api = os.getenv("PIHOLE_API", "http://10.0.0.2/api")
     pihole_token = os.getenv("PIHOLE_TOKEN")
     domain_suffix = os.getenv("DOMAIN_SUFFIX", "home")
@@ -341,6 +358,7 @@ def main() -> None:
     keep_local = os.getenv("KEEP_LOCAL", "0") == "1"
     overrides_file = os.getenv("DNS_OVERRIDES_FILE", "/config/overrides")
     static_hosts_env = os.getenv("DNS_STATIC_HOSTS", "")
+    min_mdns_hosts = int(os.getenv("MIN_MDNS_HOSTS", "1"))
 
     if not pihole_token:
         print("[ERROR] Missing API token (PIHOLE_TOKEN)", file=sys.stderr)
@@ -393,14 +411,17 @@ def main() -> None:
                 "[WARN] No Pi-hole targets available; retrying next interval.",
                 file=sys.stderr,
             )
-            return
+            return False
 
         if errors:
             print(f"[WARN] Failed to connect to {len(errors)} target(s):", file=sys.stderr)
             for err in errors:
                 print(f"  - {err}", file=sys.stderr)
 
-        # Sync to all connected targets
+        # Sync to all connected targets. A connected target whose sync fails
+        # does not count as a successful cycle; the caller uses this result to
+        # enforce a bounded outage budget instead of hiding a permanent outage.
+        successful_syncs = 0
         for i, client in enumerate(pihole_clients, 1):
             try:
                 sync_iteration(
@@ -410,8 +431,10 @@ def main() -> None:
                     keep_local=keep_local,
                     overrides=overrides,
                     debug=debug_enabled,
+                    min_mdns_hosts=min_mdns_hosts,
                 )
                 _debug_log(debug_enabled, f"{target_name(i)}: sync complete")
+                successful_syncs += 1
             except RuntimeError as exc:
                 print(f"[ERROR] {target_name(i)}: {exc}", file=sys.stderr)
 
@@ -419,8 +442,12 @@ def main() -> None:
         for client in pihole_clients:
             client.close()
 
-    print(f"[INFO] Sync complete ({len(pihole_clients)} target(s)).")
+    if successful_syncs:
+        print(f"[INFO] Sync complete ({successful_syncs}/{len(pihole_clients)} target(s)).")
+        return True
+    print("[WARN] No Pi-hole target completed a sync; retrying next interval.", file=sys.stderr)
+    return False
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main() else 1)

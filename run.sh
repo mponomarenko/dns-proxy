@@ -19,6 +19,8 @@
 # PIHOLE_TOKEN: your Pi-hole API token
 # DOMAIN_SUFFIX: default is 'local'
 # INTERVAL: sleep time in seconds between syncs (default: 300)
+# MAX_SYNC_OUTAGE_SECONDS: exit after this long without a successful sync (default: 3600)
+# MIN_MDNS_HOSTS: fail a sync when fewer than this many unique mDNS hosts are discovered (default: 1)
 # AVAHI_DISABLE_AUTOSTART: set to 1 to disable auto-start of avahi-daemon and dbus-daemon
 # DNS_OVERRIDES_FILE: path to hosts-format overrides file (default: /config/overrides)
 #                     format: "IP hostname" per line, like /etc/hosts
@@ -38,11 +40,15 @@ PIHOLE_API="${PIHOLE_API:-http://10.0.0.2/api}"
 PIHOLE_TOKEN="${PIHOLE_TOKEN:?Missing PIHOLE_TOKEN}"
 DOMAIN_SUFFIX="${DOMAIN_SUFFIX:-local}"
 INTERVAL="${INTERVAL:-300}"
+MAX_SYNC_OUTAGE_SECONDS="${MAX_SYNC_OUTAGE_SECONDS:-3600}"
+MIN_MDNS_HOSTS="${MIN_MDNS_HOSTS:-1}"
 
 echo "[STARTUP] Avahi to Pi-hole sync container started"
 echo "[CONFIG] PIHOLE_API=$PIHOLE_API"
 echo "[CONFIG] DOMAIN_SUFFIX=$DOMAIN_SUFFIX"
 echo "[CONFIG] INTERVAL=${INTERVAL}s"
+echo "[CONFIG] MAX_SYNC_OUTAGE_SECONDS=${MAX_SYNC_OUTAGE_SECONDS}s"
+echo "[CONFIG] MIN_MDNS_HOSTS=${MIN_MDNS_HOSTS}"
 
 log(){ printf '%s %s\n' "$(date +%H:%M:%S)" "$*"; }
 
@@ -113,10 +119,30 @@ avahi_ok || start_avahi
 
 
 # 4) Run the sync loop
+last_success_epoch="$(date +%s)"
+outage_started_epoch=""
 while true; do
   echo "[INFO] Syncing mDNS hostnames..."
 
-  /usr/local/bin/sync.py
+  if /usr/local/bin/sync.py; then
+    if [ -n "$outage_started_epoch" ]; then
+      now_epoch="$(date +%s)"
+      log "[INFO] Sync recovered after $((now_epoch - outage_started_epoch))s outage"
+      outage_started_epoch=""
+    fi
+    last_success_epoch="$(date +%s)"
+  else
+    now_epoch="$(date +%s)"
+    if [ -z "$outage_started_epoch" ]; then
+      outage_started_epoch="$now_epoch"
+    fi
+    outage_seconds=$((now_epoch - last_success_epoch))
+    log "[WARN] Sync failed; outage=${outage_seconds}s/${MAX_SYNC_OUTAGE_SECONDS}s; retrying"
+    if [ "$outage_seconds" -ge "$MAX_SYNC_OUTAGE_SECONDS" ]; then
+      log "[ERROR] No successful Pi-hole sync for ${outage_seconds}s; exiting"
+      exit 1
+    fi
+  fi
 
   echo "[SLEEP] Sleeping for $INTERVAL seconds..."
   sleep "$INTERVAL"
