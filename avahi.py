@@ -46,11 +46,15 @@ class AvahiClient:
         raw = self._run_browse()
         all_candidates = self._collect_candidates(raw)
         # Filter to IPv4 only for primary candidates
-        candidates = {
-            name: [ip for ip in ips if ":" not in ip]
-            for name, ips in all_candidates.items()
-        }
-        candidates = {name: ips for name, ips in candidates.items() if ips}
+        candidates = {}
+        for name, ips in all_candidates.items():
+            ipv4_candidates = [ip for ip in ips if ":" not in ip]
+            if not ipv4_candidates:
+                resolved_ip = self._resolve_ipv4(name)
+                if resolved_ip:
+                    ipv4_candidates = [resolved_ip]
+            if ipv4_candidates:
+                candidates[name] = ipv4_candidates
         if not candidates:
             print("[ERROR] No IPv4 mDNS records discovered via avahi-browse", file=sys.stderr)
         else:

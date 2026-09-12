@@ -198,6 +198,19 @@ class AvahiTimeoutTests(unittest.TestCase):
         check_output.assert_called_once()
         self.assertEqual(3, check_output.call_args.kwargs["timeout"])
 
+    def test_ipv6_only_browse_row_uses_ipv4_hostname_resolution(self):
+        client = AvahiClient(command_timeout=2)
+        raw = "=;eth0;IPv6;_ssh._tcp;local;dev;dev.local;2601::1;22;"
+        with mock.patch.object(client, "_run_browse", return_value=raw), mock.patch.object(
+            client, "_resolve_ipv4", return_value="10.0.19.182"
+        ) as resolve:
+            records = client.discover_hosts("home")
+
+        self.assertEqual(["dev.home"], [record.fqdn for record in records])
+        self.assertEqual("10.0.19.182", records[0].preferred_ip)
+        self.assertEqual(2, resolve.call_count)
+        self.assertEqual([mock.call("dev"), mock.call("dev")], resolve.call_args_list)
+
 
 class SelfCheckTests(unittest.TestCase):
     def test_mdns_self_check_rejects_conflicting_resolution(self):
